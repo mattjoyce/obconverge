@@ -32,7 +32,6 @@ func TestRun_IndexesRegularFiles(t *testing.T) {
 		t.Fatalf("paths = %v, want %v", gotPaths, wantPaths)
 	}
 
-	// Basename is set.
 	for _, e := range entries {
 		wantBase := filepath.Base(e.Path)
 		if e.Basename != wantBase {
@@ -46,6 +45,9 @@ func TestRun_IndexesRegularFiles(t *testing.T) {
 		}
 		if len(e.ContentHash) != 64 {
 			t.Errorf("entry %q: ContentHash len = %d", e.Path, len(e.ContentHash))
+		}
+		if len(e.BodyHash) != 64 {
+			t.Errorf("entry %q: BodyHash len = %d, want 64", e.Path, len(e.BodyHash))
 		}
 	}
 }
@@ -90,6 +92,101 @@ func TestRun_CRLFAndLFShareContentHashNotByteHash(t *testing.T) {
 	}
 	if lf.ContentHash != crlf.ContentHash {
 		t.Errorf("ContentHash should match after CRLF normalization; got %s != %s", lf.ContentHash, crlf.ContentHash)
+	}
+}
+
+func TestRun_FrontmatterExtraction(t *testing.T) {
+	root := testvault.Build(t,
+		testvault.File{Path: "Tagged.md", Content: "---\ntags:\n  - project\n  - cli\naliases:\n  - Alt\n---\n\n# body\n"},
+		testvault.File{Path: "Plain.md", Content: "# just a body\n"},
+	)
+	out := filepath.Join(t.TempDir(), "index.jsonl")
+	if err := scan.Run(scan.Options{VaultRoot: root, OutputPath: out}); err != nil {
+		t.Fatalf("scan.Run: %v", err)
+	}
+
+	entries := readAllEntries(t, out)
+	byPath := map[string]scan.Entry{}
+	for _, e := range entries {
+		byPath[e.Path] = e
+	}
+
+	tagged := byPath["Tagged.md"]
+	if tagged.FrontmatterHash == "" {
+		t.Error("Tagged.md: FrontmatterHash should be non-empty")
+	}
+	if tagged.BodyHash == "" {
+		t.Error("Tagged.md: BodyHash should be non-empty")
+	}
+	if tagged.FrontmatterHash == tagged.BodyHash {
+		t.Error("Tagged.md: FrontmatterHash should differ from BodyHash")
+	}
+	if !equalSlices(tagged.Tags, []string{"project", "cli"}) {
+		t.Errorf("Tagged.md: Tags = %v, want [project cli]", tagged.Tags)
+	}
+	if !equalSlices(tagged.Aliases, []string{"Alt"}) {
+		t.Errorf("Tagged.md: Aliases = %v, want [Alt]", tagged.Aliases)
+	}
+
+	plain := byPath["Plain.md"]
+	if plain.FrontmatterHash != "" {
+		t.Errorf("Plain.md: FrontmatterHash should be empty, got %q", plain.FrontmatterHash)
+	}
+	if plain.BodyHash == "" {
+		t.Error("Plain.md: BodyHash should be non-empty even without frontmatter")
+	}
+	if len(plain.Tags) != 0 {
+		t.Errorf("Plain.md: Tags = %v, want empty", plain.Tags)
+	}
+}
+
+func TestRun_DetectsSecrets(t *testing.T) {
+	root := testvault.Build(t,
+		testvault.File{Path: "Keys.md", Content: "My token: AKIAIOSFODNN7EXAMPLE\n"},
+		testvault.File{Path: "Clean.md", Content: "Just a normal note.\n"},
+	)
+	out := filepath.Join(t.TempDir(), "index.jsonl")
+	if err := scan.Run(scan.Options{VaultRoot: root, OutputPath: out}); err != nil {
+		t.Fatalf("scan.Run: %v", err)
+	}
+
+	entries := readAllEntries(t, out)
+	byPath := map[string]scan.Entry{}
+	for _, e := range entries {
+		byPath[e.Path] = e
+	}
+
+	if !byPath["Keys.md"].HasSecrets {
+		t.Error("Keys.md: HasSecrets should be true")
+	}
+	if byPath["Keys.md"].SecretPattern != "aws-access-key" {
+		t.Errorf("Keys.md: SecretPattern = %q, want aws-access-key", byPath["Keys.md"].SecretPattern)
+	}
+	if byPath["Clean.md"].HasSecrets {
+		t.Error("Clean.md: HasSecrets should be false")
+	}
+}
+
+func TestRun_BodyHashMatchesAcrossFrontmatterDifferences(t *testing.T) {
+	// Same body, different frontmatter → BodyHash matches, FrontmatterHash differs.
+	root := testvault.Build(t,
+		testvault.File{Path: "a.md", Content: "---\ntags: [one]\n---\n\nshared body\n"},
+		testvault.File{Path: "b.md", Content: "---\ntags: [two]\n---\n\nshared body\n"},
+	)
+	out := filepath.Join(t.TempDir(), "index.jsonl")
+	if err := scan.Run(scan.Options{VaultRoot: root, OutputPath: out}); err != nil {
+		t.Fatalf("scan.Run: %v", err)
+	}
+	entries := readAllEntries(t, out)
+	byPath := map[string]scan.Entry{}
+	for _, e := range entries {
+		byPath[e.Path] = e
+	}
+	if byPath["a.md"].BodyHash != byPath["b.md"].BodyHash {
+		t.Error("BodyHash should match when bodies are identical")
+	}
+	if byPath["a.md"].FrontmatterHash == byPath["b.md"].FrontmatterHash {
+		t.Error("FrontmatterHash should differ when frontmatter differs")
 	}
 }
 
@@ -156,7 +253,6 @@ func equalSlices(a, b []string) bool {
 	return true
 }
 
-// snapshotVault returns path → sha256 of every regular file under root.
 func snapshotVault(t *testing.T, root string) map[string]string {
 	t.Helper()
 	out := map[string]string{}

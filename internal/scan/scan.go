@@ -8,17 +8,21 @@ package scan
 import (
 	"fmt"
 	"io/fs"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"strings"
 	"time"
 
 	"github.com/mattjoyce/obconverge/internal/artifact"
+	"github.com/mattjoyce/obconverge/internal/frontmatter"
 	"github.com/mattjoyce/obconverge/internal/hashing"
+	"github.com/mattjoyce/obconverge/internal/secrets"
 )
 
-// Schema is the header schema string for index.jsonl artifacts.
-const Schema = "index/1"
+// Schema is the header schema string for index.jsonl artifacts. Bumped to v2
+// with the addition of frontmatter/body hashes and the secrets flag.
+const Schema = "index/2"
 
 // Entry describes one regular file discovered during a scan. It is the only
 // record type written into index.jsonl (aside from the header).
@@ -36,6 +40,21 @@ type Entry struct {
 	// ContentHash is the SHA-256 of the file's bytes with CRLF collapsed to LF.
 	// Two files that differ only in line endings share a ContentHash.
 	ContentHash string `json:"content_hash"`
+	// FrontmatterHash is the SHA-256 of the CRLF-normalized frontmatter YAML,
+	// or empty if the file has no frontmatter (or is not markdown).
+	FrontmatterHash string `json:"frontmatter_hash,omitempty"`
+	// BodyHash is the SHA-256 of the CRLF-normalized post-frontmatter body.
+	// For files without frontmatter or non-markdown files, BodyHash == ContentHash.
+	BodyHash string `json:"body_hash"`
+	// Tags are the parsed frontmatter tags, if any.
+	Tags []string `json:"tags,omitempty"`
+	// Aliases are the parsed frontmatter aliases, if any.
+	Aliases []string `json:"aliases,omitempty"`
+	// HasSecrets is true if the file matches any known credential pattern.
+	HasSecrets bool `json:"has_secrets,omitempty"`
+	// SecretPattern names the first matched pattern (e.g. "anthropic"), or
+	// empty. Never contains the secret itself.
+	SecretPattern string `json:"secret_pattern,omitempty"`
 }
 
 // DefaultProtectedPrefixes are the vault-relative path prefixes that scan
@@ -78,7 +97,8 @@ func Run(opts Options) error {
 	}
 	defer func() { _ = w.Close() }()
 
-	return filepath.WalkDir(opts.VaultRoot, func(path string, d fs.DirEntry, walkErr error) error {
+	var fileCount int
+	err = filepath.WalkDir(opts.VaultRoot, func(path string, d fs.DirEntry, walkErr error) error {
 		if walkErr != nil {
 			return walkErr
 		}
@@ -109,19 +129,18 @@ func Run(opts Options) error {
 			return nil
 		}
 
-		byteHash, contentHash, err := hashPair(path)
+		entry, err := analyze(path, relSlash, info)
 		if err != nil {
 			return err
 		}
-		return w.Write(Entry{
-			Path:        relSlash,
-			Basename:    filepath.Base(rel),
-			Size:        info.Size(),
-			ModTime:     info.ModTime().UTC(),
-			ByteHash:    string(byteHash),
-			ContentHash: contentHash,
-		})
+		fileCount++
+		return w.Write(entry)
 	})
+	if err != nil {
+		return err
+	}
+	slog.Debug("scan walked", "vault", opts.VaultRoot, "files", fileCount)
+	return nil
 }
 
 func isProtected(relSlash string, prefixes []string) bool {
@@ -133,15 +152,63 @@ func isProtected(relSlash string, prefixes []string) bool {
 	return false
 }
 
-// hashPair returns (byteHash, contentHash). contentHash normalizes CRLF to LF
-// before hashing, so files that differ only in line endings collide.
-func hashPair(path string) (hashing.ContentHash, string, error) {
+// analyze reads a single file and computes all its signals.
+func analyze(path, relSlash string, info os.FileInfo) (Entry, error) {
 	b, err := os.ReadFile(path)
 	if err != nil {
-		return "", "", err
+		return Entry{}, err
 	}
-	byteHash := hashing.OfBytes(b)
-	normalized := strings.ReplaceAll(string(b), "\r\n", "\n")
-	contentHash := hashing.OfBytes([]byte(normalized))
-	return byteHash, string(contentHash), nil
+	entry := Entry{
+		Path:        relSlash,
+		Basename:    filepath.Base(relSlash),
+		Size:        info.Size(),
+		ModTime:     info.ModTime().UTC(),
+		ByteHash:    string(hashing.OfBytes(b)),
+		ContentHash: string(hashing.OfBytes(normalizeLineEndings(b))),
+	}
+
+	// Frontmatter + secret analysis only applies to markdown.
+	if isMarkdown(relSlash) {
+		fm, body := frontmatter.Split(b)
+		entry.BodyHash = string(hashing.OfBytes(normalizeLineEndings(body)))
+		if fm != nil {
+			entry.FrontmatterHash = string(hashing.OfBytes(normalizeLineEndings(fm)))
+			fields, fmErr := frontmatter.ExtractFields(fm)
+			if fmErr != nil {
+				slog.Warn("frontmatter parse failed", "path", relSlash, "err", fmErr)
+			} else {
+				entry.Tags = fields.Tags
+				entry.Aliases = fields.Aliases
+			}
+		}
+		if matched, name := secrets.Detect(b); matched {
+			entry.HasSecrets = true
+			entry.SecretPattern = name
+		}
+		return entry, nil
+	}
+
+	// Non-markdown: BodyHash is the CRLF-normalized full content.
+	entry.BodyHash = entry.ContentHash
+	return entry, nil
+}
+
+func isMarkdown(relSlash string) bool {
+	return strings.EqualFold(filepath.Ext(relSlash), ".md")
+}
+
+func normalizeLineEndings(b []byte) []byte {
+	// strings.ReplaceAll would allocate a string first; we can do the
+	// byte-level replace directly to avoid one round trip.
+	if len(b) == 0 {
+		return b
+	}
+	out := make([]byte, 0, len(b))
+	for i := 0; i < len(b); i++ {
+		if i+1 < len(b) && b[i] == '\r' && b[i+1] == '\n' {
+			continue
+		}
+		out = append(out, b[i])
+	}
+	return out
 }

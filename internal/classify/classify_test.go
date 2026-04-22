@@ -2,8 +2,10 @@ package classify_test
 
 import (
 	"io"
+	"os"
 	"path/filepath"
 	"reflect"
+	"strings"
 	"testing"
 
 	"github.com/mattjoyce/obconverge/internal/artifact"
@@ -38,6 +40,30 @@ func TestClassify_CRLFOnlyDifference(t *testing.T) {
 	}
 }
 
+func TestClassify_FrontmatterOnly_SameBodyDifferentTags(t *testing.T) {
+	root := testvault.Build(t,
+		testvault.File{Path: "Notes/Delta.md", Content: "---\ntags: [a]\n---\n\nshared body\n"},
+		testvault.File{Path: "Prod/Delta.md", Content: "---\ntags: [b]\n---\n\nshared body\n"},
+	)
+	records := scanAndClassify(t, root)
+	pair := findPair(t, records, "Delta.md")
+	if pair.Bucket != classify.BucketFrontmatterOnly {
+		t.Errorf("bucket = %s, want FRONTMATTER-ONLY", pair.Bucket)
+	}
+}
+
+func TestClassify_FrontmatterEqual_SameFrontmatterDifferentBody(t *testing.T) {
+	root := testvault.Build(t,
+		testvault.File{Path: "Notes/Epsilon.md", Content: "---\ntags: [x]\n---\n\nbody one\n"},
+		testvault.File{Path: "Prod/Epsilon.md", Content: "---\ntags: [x]\n---\n\nbody two\n"},
+	)
+	records := scanAndClassify(t, root)
+	pair := findPair(t, records, "Epsilon.md")
+	if pair.Bucket != classify.BucketFrontmatterEqual {
+		t.Errorf("bucket = %s, want FRONTMATTER-EQUAL", pair.Bucket)
+	}
+}
+
 func TestClassify_DivergedBodies(t *testing.T) {
 	root := testvault.Build(t,
 		testvault.File{Path: "Notes/Gamma.md", Content: "original\n"},
@@ -48,6 +74,66 @@ func TestClassify_DivergedBodies(t *testing.T) {
 	pair := findPair(t, records, "Gamma.md")
 	if pair.Bucket != classify.BucketDiverged {
 		t.Errorf("bucket = %s, want DIVERGED", pair.Bucket)
+	}
+}
+
+func TestClassify_Secrets_PairBucketWinsOverExact(t *testing.T) {
+	// Both files are byte-identical AND contain a credential. The spec says
+	// SECRETS must win regardless of any other similarity signal.
+	content := "token: AKIAIOSFODNN7EXAMPLE\n"
+	root := testvault.Build(t,
+		testvault.File{Path: "Notes/Keys.md", Content: content},
+		testvault.File{Path: "Prod/Keys.md", Content: content},
+	)
+	records := scanAndClassify(t, root)
+	pair := findPair(t, records, "Keys.md")
+	if pair.Bucket != classify.BucketSecrets {
+		t.Errorf("bucket = %s, want SECRETS (must win over EXACT)", pair.Bucket)
+	}
+	if pair.SecretPattern != "aws-access-key" {
+		t.Errorf("SecretPattern = %q, want aws-access-key", pair.SecretPattern)
+	}
+}
+
+func TestClassify_Secrets_UniqueFileQuarantined(t *testing.T) {
+	root := testvault.Build(t,
+		testvault.File{Path: "Notes/Lonely.md", Content: "key: AKIAIOSFODNN7EXAMPLE\n"},
+	)
+	records := scanAndClassify(t, root)
+	if len(records) != 1 {
+		t.Fatalf("records = %d, want 1", len(records))
+	}
+	r := records[0]
+	if r.Type != "unique" {
+		t.Errorf("type = %s, want unique", r.Type)
+	}
+	if r.Bucket != classify.BucketSecrets {
+		t.Errorf("bucket = %s, want SECRETS", r.Bucket)
+	}
+}
+
+func TestClassify_SecretsNeverLeakContent(t *testing.T) {
+	// Invariant from SPEC.md: the SECRETS record must not contain the
+	// credential content itself — only a pattern name.
+	secret := "AKIAIOSFODNN7EXAMPLE"
+	root := testvault.Build(t,
+		testvault.File{Path: "Keys.md", Content: "token: " + secret + "\n"},
+	)
+	dir := t.TempDir()
+	indexPath := filepath.Join(dir, "index.jsonl")
+	classPath := filepath.Join(dir, "classification.jsonl")
+
+	if err := scan.Run(scan.Options{VaultRoot: root, OutputPath: indexPath}); err != nil {
+		t.Fatalf("scan.Run: %v", err)
+	}
+	if err := classify.Run(classify.Options{IndexPath: indexPath, ClassificationPath: classPath}); err != nil {
+		t.Fatalf("classify.Run: %v", err)
+	}
+
+	// Read the raw classification bytes and assert they do NOT contain the secret.
+	data := mustReadFile(t, classPath)
+	if strings.Contains(string(data), secret) {
+		t.Errorf("classification.jsonl leaked the secret: %s", data)
 	}
 }
 
@@ -81,8 +167,7 @@ func TestClassify_MixedVault(t *testing.T) {
 
 	buckets := map[string]classify.Bucket{}
 	for _, r := range records {
-		key := r.Basename
-		buckets[key] = r.Bucket
+		buckets[r.Basename] = r.Bucket
 	}
 
 	if buckets["Alpha.md"] != classify.BucketExact {
@@ -97,8 +182,7 @@ func TestClassify_MixedVault(t *testing.T) {
 }
 
 func TestClassify_OutputIsDeterministic(t *testing.T) {
-	// Same input → same output, byte-for-byte. This is the "pure function"
-	// invariant from the spec.
+	// Same input → same output, byte-for-byte. The "pure function" invariant.
 	root := testvault.Build(t,
 		testvault.File{Path: "Notes/Alpha.md", Content: "a\n"},
 		testvault.File{Path: "Prod/Alpha.md", Content: "a\n"},
@@ -115,6 +199,8 @@ func TestClassify_OutputIsDeterministic(t *testing.T) {
 		}
 	}
 }
+
+// helpers
 
 func scanAndClassify(t *testing.T, vaultRoot string) []classify.Record {
 	t.Helper()
@@ -159,4 +245,13 @@ func findPair(t *testing.T, records []classify.Record, basename string) classify
 	}
 	t.Fatalf("no pair record for basename %q in %+v", basename, records)
 	return classify.Record{}
+}
+
+func mustReadFile(t *testing.T, path string) []byte {
+	t.Helper()
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("readFile %s: %v", path, err)
+	}
+	return data
 }

@@ -1,8 +1,9 @@
 // Package classify reads an index.jsonl artifact and produces classification.jsonl.
 //
 // Classify is a pure function of the index: same input → same output. It
-// never touches the vault. Policy (which bucket triggers which action) lives
-// elsewhere, in internal/policy; classify's sole job is to name the pair.
+// never touches the vault directly in this MVP (future buckets like
+// APPEND-ONLY will need to read file bytes; the spec explicitly allows
+// read-only access during classify).
 package classify
 
 import (
@@ -15,31 +16,39 @@ import (
 )
 
 // Schema is the header schema string for classification.jsonl artifacts.
-const Schema = "classification/1"
+// Bumped to v2 with the addition of FRONTMATTER-ONLY, FRONTMATTER-EQUAL,
+// and SECRETS buckets.
+const Schema = "classification/2"
 
 // Bucket is the classifier's verdict for a pair (or single) of files.
 //
-// The v1 MVP handles EXACT, CRLF-ONLY, DIVERGED, and UNIQUE. Additional
-// buckets (FRONTMATTER-ONLY, TAG-DELTA, APPEND-ONLY, SECRETS) require
-// parsing markdown and frontmatter and will land in later passes.
+// Buckets not yet implemented: TAG-DELTA, APPEND-ONLY. They require finer
+// frontmatter canonicalization / byte-level prefix comparison respectively
+// and will land in follow-up commits.
 type Bucket string
 
 const (
-	BucketExact    Bucket = "EXACT"
-	BucketCRLFOnly Bucket = "CRLF-ONLY"
-	BucketDiverged Bucket = "DIVERGED"
-	BucketUnique   Bucket = "UNIQUE"
+	BucketExact            Bucket = "EXACT"
+	BucketCRLFOnly         Bucket = "CRLF-ONLY"
+	BucketFrontmatterOnly  Bucket = "FRONTMATTER-ONLY"
+	BucketFrontmatterEqual Bucket = "FRONTMATTER-EQUAL"
+	BucketDiverged         Bucket = "DIVERGED"
+	BucketSecrets          Bucket = "SECRETS"
+	BucketUnique           Bucket = "UNIQUE"
 )
 
 // Record is the union of classification record shapes written to
-// classification.jsonl. Type is "pair" or "unique"; callers should decode
-// that field first and then re-decode into the appropriate shape.
+// classification.jsonl. Type is "pair" or "unique".
 type Record struct {
 	Type     string   `json:"type"`
 	Bucket   Bucket   `json:"bucket"`
 	Basename string   `json:"basename"`
 	Paths    []string `json:"paths,omitempty"` // set for type=pair
 	Path     string   `json:"path,omitempty"`  // set for type=unique
+	// SecretPattern names the first matched credential pattern. Set only for
+	// SECRETS records. Never contains the secret itself — just a pattern
+	// name like "anthropic" or "aws-access-key".
+	SecretPattern string `json:"secret_pattern,omitempty"`
 }
 
 // Options configures a classification run.
@@ -49,8 +58,9 @@ type Options struct {
 }
 
 // Run reads the index and writes classification records grouping entries by
-// basename. Entries whose basename appears only once emit a UNIQUE record;
-// every other group emits one PAIR record per unordered pair.
+// basename. Entries whose basename appears only once emit a UNIQUE record
+// (or SECRETS if the file carries credentials); every other group emits one
+// PAIR record per unordered pair.
 func Run(opts Options) error {
 	if opts.IndexPath == "" {
 		return fmt.Errorf("classify: IndexPath is required")
@@ -96,27 +106,14 @@ func Run(opts Options) error {
 		sort.Slice(entries, func(i, j int) bool { return entries[i].Path < entries[j].Path })
 
 		if len(entries) == 1 {
-			rec := Record{
-				Type:     "unique",
-				Bucket:   BucketUnique,
-				Basename: name,
-				Path:     entries[0].Path,
-			}
-			if err := w.Write(rec); err != nil {
+			if err := writeUnique(w, name, entries[0]); err != nil {
 				return err
 			}
 			continue
 		}
 		for i := 0; i < len(entries); i++ {
 			for j := i + 1; j < len(entries); j++ {
-				a, b := entries[i], entries[j]
-				rec := Record{
-					Type:     "pair",
-					Bucket:   bucketFor(a, b),
-					Basename: name,
-					Paths:    []string{a.Path, b.Path},
-				}
-				if err := w.Write(rec); err != nil {
+				if err := writePair(w, name, entries[i], entries[j]); err != nil {
 					return err
 				}
 			}
@@ -125,23 +122,64 @@ func Run(opts Options) error {
 	return nil
 }
 
-// bucketFor is the pure core of the classifier: given two index entries,
-// return the bucket that names their relationship.
+func writeUnique(w *artifact.Writer, name string, e scan.Entry) error {
+	rec := Record{
+		Type:     "unique",
+		Basename: name,
+		Path:     e.Path,
+	}
+	if e.HasSecrets {
+		rec.Bucket = BucketSecrets
+		rec.SecretPattern = e.SecretPattern
+	} else {
+		rec.Bucket = BucketUnique
+	}
+	return w.Write(rec)
+}
+
+func writePair(w *artifact.Writer, name string, a, b scan.Entry) error {
+	rec := Record{
+		Type:     "pair",
+		Basename: name,
+		Paths:    []string{a.Path, b.Path},
+	}
+	rec.Bucket, rec.SecretPattern = bucketFor(a, b)
+	return w.Write(rec)
+}
+
+// bucketFor is the pure core of the classifier.
 //
-// The v1 logic is intentionally coarse:
-//
-//	ByteHash equal       → EXACT
-//	ContentHash equal    → CRLF-ONLY (byte-different, CRLF-normalized equal)
-//	else                 → DIVERGED
-//
-// Finer-grained buckets (FRONTMATTER-ONLY, TAG-DELTA, APPEND-ONLY) need
-// parsed markdown and are explicitly deferred.
-func bucketFor(a, b scan.Entry) Bucket {
+// Order matters — SECRETS always wins, regardless of any other similarity.
+// This matches the spec: "Route any file containing such a string into the
+// SECRETS bucket, regardless of other similarity signals."
+func bucketFor(a, b scan.Entry) (Bucket, string) {
+	if a.HasSecrets || b.HasSecrets {
+		return BucketSecrets, firstNonEmpty(a.SecretPattern, b.SecretPattern)
+	}
 	if a.ByteHash == b.ByteHash {
-		return BucketExact
+		return BucketExact, ""
 	}
 	if a.ContentHash == b.ContentHash {
-		return BucketCRLFOnly
+		return BucketCRLFOnly, ""
 	}
-	return BucketDiverged
+	// Body match, frontmatter differs → FRONTMATTER-ONLY.
+	// BodyHash can be empty on non-md files that went through older schemas;
+	// require both sides non-empty before using it.
+	if a.BodyHash != "" && a.BodyHash == b.BodyHash {
+		return BucketFrontmatterOnly, ""
+	}
+	// Frontmatter match, body differs → FRONTMATTER-EQUAL.
+	if a.FrontmatterHash != "" && a.FrontmatterHash == b.FrontmatterHash {
+		return BucketFrontmatterEqual, ""
+	}
+	return BucketDiverged, ""
+}
+
+func firstNonEmpty(s ...string) string {
+	for _, x := range s {
+		if x != "" {
+			return x
+		}
+	}
+	return ""
 }
