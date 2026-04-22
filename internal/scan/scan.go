@@ -76,7 +76,7 @@ func Run(opts Options) error {
 	if err != nil {
 		return err
 	}
-	defer w.Close()
+	defer func() { _ = w.Close() }()
 
 	return filepath.WalkDir(opts.VaultRoot, func(path string, d fs.DirEntry, walkErr error) error {
 		if walkErr != nil {

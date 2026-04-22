@@ -63,7 +63,7 @@ func Run(opts Options) error {
 	if err != nil {
 		return err
 	}
-	defer r.Close()
+	defer func() { _ = r.Close() }()
 
 	byBasename := map[string][]scan.Entry{}
 	for {
@@ -82,7 +82,7 @@ func Run(opts Options) error {
 	if err != nil {
 		return err
 	}
-	defer w.Close()
+	defer func() { _ = w.Close() }()
 
 	// Deterministic output order — plan reviewability requires it.
 	names := make([]string, 0, len(byBasename))

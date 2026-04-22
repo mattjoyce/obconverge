@@ -72,9 +72,9 @@ func TestClassify_UniqueHasNoPair(t *testing.T) {
 func TestClassify_MixedVault(t *testing.T) {
 	root := testvault.Build(t,
 		testvault.File{Path: "Notes/Alpha.md", Content: "alpha\n"},
-		testvault.File{Path: "Prod/Alpha.md", Content: "alpha\n"},     // EXACT
+		testvault.File{Path: "Prod/Alpha.md", Content: "alpha\n"}, // EXACT
 		testvault.File{Path: "Notes/Beta.md", Content: "beta\n"},
-		testvault.File{Path: "Prod/Beta.md", Content: "beta\r\n"},     // CRLF-ONLY
+		testvault.File{Path: "Prod/Beta.md", Content: "beta\r\n"},    // CRLF-ONLY
 		testvault.File{Path: "Notes/Solo.md", Content: "only one\n"}, // UNIQUE
 	)
 	records := scanAndClassify(t, root)
