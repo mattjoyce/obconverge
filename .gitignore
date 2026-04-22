@@ -1,0 +1,19 @@
+# Binaries
+/obconverge
+/dist/
+
+# Test artifacts
+*.test
+*.out
+coverage.*
+
+# OS
+.DS_Store
+
+# Editor
+.idea/
+.vscode/
+*.swp
+
+# Working artifacts from local runs
+.obconverge/
