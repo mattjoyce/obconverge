@@ -90,7 +90,10 @@ func TestCLI_SkillsFlag(t *testing.T) {
 		t.Fatalf("--skills: %v", err)
 	}
 	body := out.String()
-	if !strings.Contains(body, "obconverge") || !strings.Contains(body, "## Subcommands") {
+	// Sanity: tool name appears and at least one pipeline subcommand is
+	// mentioned. Don't pin on specific section headings — those are free
+	// to evolve as the doc tightens.
+	if !strings.Contains(body, "obconverge") || !strings.Contains(body, "apply") {
 		t.Errorf("--skills output missing expected sections:\n%s", body)
 	}
 }

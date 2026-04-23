@@ -21,8 +21,8 @@ func TestMarkdown_IsNonEmpty(t *testing.T) {
 	if len(md) < 500 {
 		t.Errorf("markdown descriptor too short: %d bytes", len(md))
 	}
-	// Must declare the tool and mention at least the implemented subcommands.
-	for _, want := range []string{"obconverge", "## Subcommands", "scan", "classify", "plan"} {
+	// Must declare the tool and reference every pipeline subcommand.
+	for _, want := range []string{"obconverge", "scan", "classify", "plan", "apply", "undo", "purge"} {
 		if !strings.Contains(md, want) {
 			t.Errorf("markdown missing %q", want)
 		}
