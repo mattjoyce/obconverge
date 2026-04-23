@@ -74,6 +74,24 @@ log_level: "info"
 
 …then the `--vault` flag is optional.
 
+## Extending the secret detector
+
+Built-in credential patterns ship with the binary in `internal/secrets/patterns.json`. To add your own (for example, an internal company token format), drop a file at `~/.config/obconverge/secret_patterns.json`:
+
+```json
+{
+  "patterns": [
+    {"name": "corp-token", "regex": "CORP-[A-Z0-9]{16}", "description": "Internal corp tokens"}
+  ]
+}
+```
+
+Rules:
+
+- User patterns are **additive**. They cannot remove or shadow built-ins.
+- Names must be unique across built-ins and user patterns. Collisions are a hard error.
+- Regex syntax is Go's `regexp` package (RE2). Invalid regex fails at CLI startup, not silently.
+
 ## Policy
 
 `<vault>/.obconverge/policy.yaml` (optional) overrides the defaults:

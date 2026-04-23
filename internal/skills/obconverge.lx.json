@@ -123,5 +123,14 @@
     {"name": "jwt", "description": "JSON Web Tokens (three base64url segments)"},
     {"name": "slack", "description": "Slack tokens (xoxb/xoxa/xoxp/xoxr/xoxs-...)"},
     {"name": "pem", "description": "PEM-encoded private keys (BEGIN ... PRIVATE KEY)"}
-  ]
+  ],
+  "secret_patterns_source": {
+    "builtin": "internal/secrets/patterns.json (embedded in the binary)",
+    "user_extension_path": "~/.config/obconverge/secret_patterns.json",
+    "extension_semantics": "Additive only. User patterns are appended after built-ins. A user pattern whose name collides with a built-in (or another user pattern) is a hard error; user extensions can never remove or shadow shipped detectors.",
+    "extension_schema": {
+      "shape": {"patterns": [{"name": "string (unique)", "regex": "string (Go regexp syntax)", "description": "string (optional)"}]},
+      "example": {"patterns": [{"name": "corp-token", "regex": "CORP-[A-Z0-9]{16}", "description": "Internal corp tokens"}]}
+    }
+  }
 }

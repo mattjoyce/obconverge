@@ -19,6 +19,7 @@ import (
 	"github.com/mattjoyce/obconverge/internal/logging"
 	"github.com/mattjoyce/obconverge/internal/plan"
 	"github.com/mattjoyce/obconverge/internal/scan"
+	"github.com/mattjoyce/obconverge/internal/secrets"
 	"github.com/mattjoyce/obconverge/internal/skills"
 )
 
@@ -81,6 +82,13 @@ func newRoot() *cobra.Command {
 				format = logFormat
 			}
 			slog.SetDefault(logging.New(logging.Options{Level: level, Format: format}))
+
+			// Load user extensions to the secret detector, if any. Missing
+			// file is fine; collisions with built-in names are a hard error.
+			extPath, _ := secrets.DefaultUserExtensionPath()
+			if err := secrets.LoadUserExtensions(extPath); err != nil {
+				return fmt.Errorf("%w: %v", errcode.ErrValidation, err)
+			}
 
 			// Make config available to subcommands via context.
 			cmd.SetContext(context.WithValue(cmd.Context(), cfgKey, cfg))

@@ -1,6 +1,8 @@
 package secrets
 
 import (
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -119,4 +121,134 @@ func TestNoContentLeakage(t *testing.T) {
 	if strings.Contains(name, secret) {
 		t.Error("pattern name leaked secret content")
 	}
+}
+
+func TestBuiltinNames_MatchesShippedPatterns(t *testing.T) {
+	want := []string{
+		"anthropic", "openai", "aws-access-key", "google-api",
+		"github-pat", "github-fine", "jwt", "slack", "pem",
+	}
+	got := BuiltinNames()
+	if len(got) != len(want) {
+		t.Fatalf("BuiltinNames count = %d, want %d: got %v", len(got), len(want), got)
+	}
+	seen := map[string]bool{}
+	for _, n := range got {
+		seen[n] = true
+	}
+	for _, w := range want {
+		if !seen[w] {
+			t.Errorf("missing built-in pattern %q", w)
+		}
+	}
+}
+
+func TestLoadUserExtensions_AddsNewPattern(t *testing.T) {
+	t.Cleanup(Reset)
+
+	path := writeJSON(t, t.TempDir(), `{
+		"patterns": [
+			{"name": "corp-token", "regex": "CORP-[A-Z0-9]{16}", "description": "Internal corp tokens"}
+		]
+	}`)
+
+	if err := LoadUserExtensions(path); err != nil {
+		t.Fatalf("LoadUserExtensions: %v", err)
+	}
+	if !Contains([]byte("AKIAIOSFODNN7EXAMPLE")) {
+		t.Error("built-in aws pattern no longer detects after user extension loaded")
+	}
+	matched, name := Detect([]byte("key: CORP-ABC123XYZ9876QRST"))
+	if !matched {
+		t.Error("user extension pattern should match its fixture")
+	}
+	if name != "corp-token" {
+		t.Errorf("name = %q, want corp-token", name)
+	}
+}
+
+func TestLoadUserExtensions_MissingFileIsNoOp(t *testing.T) {
+	t.Cleanup(Reset)
+	if err := LoadUserExtensions(filepath.Join(t.TempDir(), "does-not-exist.json")); err != nil {
+		t.Errorf("missing file should not error, got %v", err)
+	}
+	if !Contains([]byte("AKIAIOSFODNN7EXAMPLE")) {
+		t.Error("built-ins broken after no-op extension load")
+	}
+}
+
+func TestLoadUserExtensions_DuplicateNameIsError(t *testing.T) {
+	t.Cleanup(Reset)
+	path := writeJSON(t, t.TempDir(), `{
+		"patterns": [
+			{"name": "openai", "regex": "anything", "description": "tries to shadow built-in"}
+		]
+	}`)
+	err := LoadUserExtensions(path)
+	if err == nil {
+		t.Fatal("expected error for name collision with built-in")
+	}
+	if !strings.Contains(err.Error(), "openai") {
+		t.Errorf("error should name the colliding pattern: %v", err)
+	}
+}
+
+func TestLoadUserExtensions_InvalidRegexIsError(t *testing.T) {
+	t.Cleanup(Reset)
+	path := writeJSON(t, t.TempDir(), `{
+		"patterns": [
+			{"name": "bad", "regex": "(unclosed", "description": "bad regex"}
+		]
+	}`)
+	if err := LoadUserExtensions(path); err == nil {
+		t.Fatal("expected error for invalid regex")
+	}
+}
+
+func TestLoadUserExtensions_EmptyPathIsNoOp(t *testing.T) {
+	t.Cleanup(Reset)
+	if err := LoadUserExtensions(""); err != nil {
+		t.Errorf("empty path should not error, got %v", err)
+	}
+}
+
+func TestReset_DiscardsUserExtensions(t *testing.T) {
+	t.Cleanup(Reset)
+	path := writeJSON(t, t.TempDir(), `{
+		"patterns": [
+			{"name": "one-shot", "regex": "ONESHOT-[A-Z]+", "description": "ephemeral"}
+		]
+	}`)
+	if err := LoadUserExtensions(path); err != nil {
+		t.Fatalf("LoadUserExtensions: %v", err)
+	}
+	if !Contains([]byte("ONESHOT-ABC")) {
+		t.Fatal("extension didn't load in the first place")
+	}
+	Reset()
+	if Contains([]byte("ONESHOT-ABC")) {
+		t.Error("Reset should discard user extensions")
+	}
+	if !Contains([]byte("AKIAIOSFODNN7EXAMPLE")) {
+		t.Error("Reset clobbered built-ins")
+	}
+}
+
+func TestDefaultUserExtensionPath(t *testing.T) {
+	got, err := DefaultUserExtensionPath()
+	if err != nil {
+		t.Fatalf("DefaultUserExtensionPath: %v", err)
+	}
+	if !strings.HasSuffix(got, "/.config/obconverge/secret_patterns.json") {
+		t.Errorf("path = %q, want suffix /.config/obconverge/secret_patterns.json", got)
+	}
+}
+
+func writeJSON(t *testing.T, dir, body string) string {
+	t.Helper()
+	path := filepath.Join(dir, "secret_patterns.json")
+	if err := os.WriteFile(path, []byte(body), 0o644); err != nil {
+		t.Fatalf("write fixture: %v", err)
+	}
+	return path
 }

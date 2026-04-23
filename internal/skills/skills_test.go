@@ -5,6 +5,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/mattjoyce/obconverge/internal/secrets"
 	"github.com/mattjoyce/obconverge/internal/skills"
 )
 
@@ -95,25 +96,29 @@ func TestParse_ExitCodesCoverFullRange(t *testing.T) {
 }
 
 func TestParse_SecretPatternNamesMatchSecretsPackage(t *testing.T) {
-	// The descriptor names should match the pattern names returned by
-	// secrets.Detect. That package imports this one indirectly via the CLI,
-	// not directly — so we list them here and cross-check.
+	// Drift guard: the descriptor's secret_patterns list must match the
+	// built-in names in internal/secrets. Adding a pattern to patterns.json
+	// but forgetting the descriptor (or vice versa) fails this test.
 	d, err := skills.Parse()
 	if err != nil {
 		t.Fatalf("Parse: %v", err)
 	}
-	// Source-of-truth pattern names from internal/secrets/secrets.go.
-	wantPatterns := []string{
-		"anthropic", "openai", "aws-access-key", "google-api",
-		"github-pat", "github-fine", "jwt", "slack", "pem",
-	}
-	seen := map[string]bool{}
+	descNames := map[string]bool{}
 	for _, p := range d.SecretPatterns {
-		seen[p.Name] = true
+		descNames[p.Name] = true
 	}
-	for _, want := range wantPatterns {
-		if !seen[want] {
-			t.Errorf("descriptor missing secret pattern %q", want)
+	secretsNames := map[string]bool{}
+	for _, n := range secrets.BuiltinNames() {
+		secretsNames[n] = true
+	}
+	for n := range secretsNames {
+		if !descNames[n] {
+			t.Errorf("descriptor missing secret pattern %q (present in internal/secrets)", n)
+		}
+	}
+	for n := range descNames {
+		if !secretsNames[n] {
+			t.Errorf("descriptor has secret pattern %q not in internal/secrets", n)
 		}
 	}
 }
