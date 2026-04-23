@@ -206,7 +206,12 @@ func newClassifyCmd() *cobra.Command {
 			if err != nil {
 				return fmt.Errorf("classify: build link graph: %w", err)
 			}
-			if err := classify.Run(classify.Options{IndexPath: in, ClassificationPath: out, Graph: graph}); err != nil {
+			if err := classify.Run(classify.Options{
+				IndexPath:          in,
+				ClassificationPath: out,
+				Graph:              graph,
+				VaultRoot:          root,
+			}); err != nil {
 				return err
 			}
 			slog.Info("classify complete", "output", out)

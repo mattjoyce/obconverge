@@ -92,6 +92,45 @@ func TestClassify_DivergedBodies(t *testing.T) {
 	}
 }
 
+func TestClassify_AppendOnly_OneIsPrefixOfOther(t *testing.T) {
+	root := testvault.Build(t,
+		testvault.File{Path: "Notes/App.md", Content: "line one\nline two\n"},
+		testvault.File{Path: "Prod/App.md", Content: "line one\nline two\nline three\n"},
+	)
+	records := scanAndClassify(t, root)
+	pair := findPair(t, records, "App.md")
+	if pair.Bucket != classify.BucketAppendOnly {
+		t.Errorf("bucket = %s, want APPEND-ONLY", pair.Bucket)
+	}
+}
+
+func TestClassify_AppendOnly_CRLFVariantDetected(t *testing.T) {
+	// Shorter has LF, longer has CRLF. After normalization the shorter is
+	// still a prefix of the longer.
+	root := testvault.Build(t,
+		testvault.File{Path: "Notes/App2.md", Content: "alpha\nbeta\n"},
+		testvault.File{Path: "Prod/App2.md", Content: "alpha\r\nbeta\r\ngamma\r\n"},
+	)
+	records := scanAndClassify(t, root)
+	pair := findPair(t, records, "App2.md")
+	if pair.Bucket != classify.BucketAppendOnly {
+		t.Errorf("bucket = %s, want APPEND-ONLY across CRLF", pair.Bucket)
+	}
+}
+
+func TestClassify_AppendOnly_NonPrefixStaysDiverged(t *testing.T) {
+	// Different lengths but the shorter isn't a prefix of the longer.
+	root := testvault.Build(t,
+		testvault.File{Path: "Notes/App3.md", Content: "hello world\n"},
+		testvault.File{Path: "Prod/App3.md", Content: "goodbye world and more\n"},
+	)
+	records := scanAndClassify(t, root)
+	pair := findPair(t, records, "App3.md")
+	if pair.Bucket != classify.BucketDiverged {
+		t.Errorf("bucket = %s, want DIVERGED (not a prefix)", pair.Bucket)
+	}
+}
+
 func TestClassify_Secrets_PairBucketWinsOverExact(t *testing.T) {
 	// Both files are byte-identical AND contain a credential. The spec says
 	// SECRETS must win regardless of any other similarity signal.
@@ -141,7 +180,7 @@ func TestClassify_SecretsNeverLeakContent(t *testing.T) {
 	if err := scan.Run(scan.Options{VaultRoot: root, OutputPath: indexPath, Detector: secrets.NewBuiltins()}); err != nil {
 		t.Fatalf("scan.Run: %v", err)
 	}
-	if err := classify.Run(classify.Options{IndexPath: indexPath, ClassificationPath: classPath}); err != nil {
+	if err := classify.Run(classify.Options{IndexPath: indexPath, ClassificationPath: classPath, VaultRoot: root}); err != nil {
 		t.Fatalf("classify.Run: %v", err)
 	}
 
@@ -226,7 +265,7 @@ func scanAndClassify(t *testing.T, vaultRoot string) []classify.Record {
 	if err := scan.Run(scan.Options{VaultRoot: vaultRoot, OutputPath: indexPath, Detector: secrets.NewBuiltins()}); err != nil {
 		t.Fatalf("scan.Run: %v", err)
 	}
-	if err := classify.Run(classify.Options{IndexPath: indexPath, ClassificationPath: classPath}); err != nil {
+	if err := classify.Run(classify.Options{IndexPath: indexPath, ClassificationPath: classPath, VaultRoot: vaultRoot}); err != nil {
 		t.Fatalf("classify.Run: %v", err)
 	}
 

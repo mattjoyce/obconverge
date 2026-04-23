@@ -179,8 +179,9 @@ var bucketOrder = map[classify.Bucket]int{
 	classify.BucketTagDelta:         3,
 	classify.BucketFrontmatterOnly:  4,
 	classify.BucketFrontmatterEqual: 5,
-	classify.BucketDiverged:         6,
-	classify.BucketUnique:           7,
+	classify.BucketAppendOnly:       6,
+	classify.BucketDiverged:         7,
+	classify.BucketUnique:           8,
 }
 
 func sortItems(items []Item) {
@@ -331,6 +332,8 @@ func baseDescription(it Item) string {
 		return "Bodies identical; frontmatter differs."
 	case classify.BucketFrontmatterEqual:
 		return "Frontmatter identical; bodies differ."
+	case classify.BucketAppendOnly:
+		return "One side is a byte-prefix of the other (only one has been appended to)."
 	case classify.BucketDiverged:
 		return "Bodies differ non-trivially."
 	case classify.BucketUnique:

@@ -78,6 +78,7 @@ func Default() Policy {
 			classify.BucketTagDelta:         ActionMergeFrontmatter,
 			classify.BucketFrontmatterOnly:  ActionMergeFrontmatter,
 			classify.BucketFrontmatterEqual: ActionReview,
+			classify.BucketAppendOnly:       ActionReview,
 			classify.BucketDiverged:         ActionReview,
 			classify.BucketSecrets:          ActionQuarantine,
 			classify.BucketUnique:           ActionKeep,

@@ -127,7 +127,7 @@
     {"name": "TAG-DELTA", "condition": "body identical; frontmatter differs only in the top-level tags key", "default_action": "merge-frontmatter", "implemented": true},
     {"name": "FRONTMATTER-ONLY", "condition": "body identical, frontmatter differs (in more than just tags)", "default_action": "merge-frontmatter", "implemented": true},
     {"name": "FRONTMATTER-EQUAL", "condition": "frontmatter identical, body differs", "default_action": "review", "implemented": true},
-    {"name": "APPEND-ONLY", "condition": "one side is a byte-prefix of the other", "default_action": "drop", "implemented": false},
+    {"name": "APPEND-ONLY", "condition": "one side is a CRLF-normalized byte-prefix of the other", "default_action": "review", "implemented": true},
     {"name": "DIVERGED", "condition": "non-trivial differences", "default_action": "review", "implemented": true},
     {"name": "SECRETS", "condition": "contains a credential-shaped string; wins over any other bucket", "default_action": "quarantine", "implemented": true},
     {"name": "UNIQUE", "condition": "single occurrence of the basename", "default_action": "keep", "implemented": true}

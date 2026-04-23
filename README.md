@@ -173,7 +173,7 @@ Agent-friendly behaviors:
 - [x] Import-graph purity invariant test — `internal/invariants/purity_test.go` asserts scan/classify/plan/etc. never transitively import apply or undo.
 - [x] Tightened linked-note refusal — pair drops now proceed (basename preserved by survivor); only unique-drops of linked files refuse
 - [x] TAG-DELTA bucket — pairs whose frontmatter differs only in `tags`; same `merge-frontmatter` action as FRONTMATTER-ONLY but named precisely
+- [x] APPEND-ONLY bucket — detects when one file is a CRLF-normalized byte-prefix of the other; default action `review` (operator decides which copy to keep)
 - [ ] `--rewrite-links` — edit referrers when dropping a linked unique
-- [ ] APPEND-ONLY — detect when one file is a byte-prefix of the other (requires classify-time file reads)
 - [ ] `TAG-DELTA` / `APPEND-ONLY` buckets
 - [ ] Import-graph purity invariant test

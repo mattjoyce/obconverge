@@ -7,8 +7,11 @@
 package classify
 
 import (
+	"bytes"
 	"fmt"
 	"io"
+	"os"
+	"path/filepath"
 	"sort"
 
 	"github.com/mattjoyce/obconverge/internal/artifact"
@@ -17,8 +20,8 @@ import (
 )
 
 // Schema is the header schema string for classification.jsonl artifacts.
-// Bumped to v4 with the addition of the TAG-DELTA bucket.
-const Schema = "classification/4"
+// Bumped to v5 with the addition of the APPEND-ONLY bucket.
+const Schema = "classification/5"
 
 // Bucket is the classifier's verdict for a pair (or single) of files.
 //
@@ -33,6 +36,7 @@ const (
 	BucketTagDelta         Bucket = "TAG-DELTA"
 	BucketFrontmatterOnly  Bucket = "FRONTMATTER-ONLY"
 	BucketFrontmatterEqual Bucket = "FRONTMATTER-EQUAL"
+	BucketAppendOnly       Bucket = "APPEND-ONLY"
 	BucketDiverged         Bucket = "DIVERGED"
 	BucketSecrets          Bucket = "SECRETS"
 	BucketUnique           Bucket = "UNIQUE"
@@ -66,6 +70,11 @@ type Options struct {
 	// each record. Nil graph means ReferrerCount stays zero — fine for
 	// tests that don't care about link topology.
 	Graph *links.Graph
+	// VaultRoot enables APPEND-ONLY detection, which requires reading
+	// both files in a pair to test for byte-prefix relationship. If
+	// empty, classify falls back to the coarser bucketing (pairs that
+	// could be APPEND-ONLY will land in DIVERGED instead).
+	VaultRoot string
 }
 
 // Run reads the index and writes classification records grouping entries by
@@ -129,7 +138,7 @@ func Run(opts Options) error {
 		}
 		for i := 0; i < len(entries); i++ {
 			for j := i + 1; j < len(entries); j++ {
-				if err := writePair(w, name, entries[i], entries[j], refCount); err != nil {
+				if err := writePair(w, name, entries[i], entries[j], refCount, opts.VaultRoot); err != nil {
 					return err
 				}
 			}
@@ -154,7 +163,7 @@ func writeUnique(w *artifact.Writer, name string, e scan.Entry, refCount int) er
 	return w.Write(rec)
 }
 
-func writePair(w *artifact.Writer, name string, a, b scan.Entry, refCount int) error {
+func writePair(w *artifact.Writer, name string, a, b scan.Entry, refCount int, vaultRoot string) error {
 	rec := Record{
 		Type:          "pair",
 		Basename:      name,
@@ -162,7 +171,53 @@ func writePair(w *artifact.Writer, name string, a, b scan.Entry, refCount int) e
 		ReferrerCount: refCount,
 	}
 	rec.Bucket, rec.SecretPattern = bucketFor(a, b)
+	// APPEND-ONLY promotes a would-be DIVERGED pair when we can read the
+	// files and confirm the prefix relationship. Requires VaultRoot.
+	if rec.Bucket == BucketDiverged && vaultRoot != "" && isAppendOnly(vaultRoot, a, b) {
+		rec.Bucket = BucketAppendOnly
+	}
 	return w.Write(rec)
+}
+
+// isAppendOnly reports whether one file's CRLF-normalized content is a
+// strict byte-prefix of the other's. That's the spec's definition:
+// "one side is a prefix of the other."
+func isAppendOnly(vaultRoot string, a, b scan.Entry) bool {
+	aBytes, err := readNormalized(vaultRoot, a.Path)
+	if err != nil {
+		return false
+	}
+	bBytes, err := readNormalized(vaultRoot, b.Path)
+	if err != nil {
+		return false
+	}
+	if len(aBytes) == len(bBytes) {
+		return false // equal length + different hashes (we're in DIVERGED) means not a prefix
+	}
+	shorter, longer := aBytes, bBytes
+	if len(bBytes) < len(aBytes) {
+		shorter, longer = bBytes, aBytes
+	}
+	return bytes.HasPrefix(longer, shorter)
+}
+
+// readNormalized reads a vault-relative path and returns its CRLF-
+// normalized contents. We compare on normalized bytes so a file with
+// mixed line endings doesn't spuriously fail to match its own
+// prefix-after-LF-append.
+func readNormalized(vaultRoot, rel string) ([]byte, error) {
+	data, err := os.ReadFile(filepath.Join(vaultRoot, rel))
+	if err != nil {
+		return nil, err
+	}
+	out := make([]byte, 0, len(data))
+	for i := 0; i < len(data); i++ {
+		if i+1 < len(data) && data[i] == '\r' && data[i+1] == '\n' {
+			continue
+		}
+		out = append(out, data[i])
+	}
+	return out, nil
 }
 
 // bucketFor is the pure core of the classifier.
