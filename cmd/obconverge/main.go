@@ -17,6 +17,7 @@ import (
 	"github.com/mattjoyce/obconverge/internal/config"
 	"github.com/mattjoyce/obconverge/internal/errcode"
 	"github.com/mattjoyce/obconverge/internal/logging"
+	"github.com/mattjoyce/obconverge/internal/plan"
 	"github.com/mattjoyce/obconverge/internal/scan"
 )
 
@@ -92,6 +93,7 @@ func newRoot() *cobra.Command {
 
 	root.AddCommand(newScanCmd())
 	root.AddCommand(newClassifyCmd())
+	root.AddCommand(newPlanCmd())
 	return root
 }
 
@@ -157,6 +159,54 @@ func newClassifyCmd() *cobra.Command {
 	cmd.Flags().StringVar(&vaultFlag, "vault", "", "Path to Obsidian vault")
 	cmd.Flags().StringVar(&indexFlag, "index", "", "Path to index.jsonl (default: <vault>/<work_dir>/index.jsonl)")
 	cmd.Flags().StringVarP(&outputFlag, "output", "o", "", "Output path for classification.jsonl")
+	return cmd
+}
+
+func newPlanCmd() *cobra.Command {
+	var vaultFlag, classFlag, policyFlag, outputFlag string
+	cmd := &cobra.Command{
+		Use:   "plan",
+		Short: "Read classification.jsonl and emit a reviewable plan.md",
+		Long:  "plan consumes classification.jsonl and a policy (bucket -> action mapping) and writes a markdown checklist the operator reviews in Obsidian. Re-running plan preserves checkbox state for actions that still apply.",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			cfg := cfgFromCtx(cmd.Context())
+			root, err := resolveVault(vaultFlag, cfg.VaultPath)
+			if err != nil {
+				return err
+			}
+			in := classFlag
+			if in == "" {
+				in = filepath.Join(root, cfg.WorkDir, "classification.jsonl")
+			}
+			polPath := policyFlag
+			if polPath == "" {
+				polFile := cfg.PolicyFile
+				if polFile == "" {
+					polFile = "policy.yaml"
+				}
+				polPath = filepath.Join(root, cfg.WorkDir, polFile)
+			}
+			out, err := resolveOutput(root, outputFlag, cfg.WorkDir, "plan.md")
+			if err != nil {
+				return err
+			}
+			slog.Debug("plan starting", "classification", in, "policy", polPath, "output", out)
+			if err := plan.Run(plan.Options{
+				ClassificationPath: in,
+				PolicyPath:         polPath,
+				OutputPath:         out,
+			}); err != nil {
+				return err
+			}
+			slog.Info("plan complete", "output", out)
+			_, _ = fmt.Fprintln(cmd.OutOrStdout(), out)
+			return nil
+		},
+	}
+	cmd.Flags().StringVar(&vaultFlag, "vault", "", "Path to Obsidian vault")
+	cmd.Flags().StringVar(&classFlag, "classification", "", "Path to classification.jsonl (default: <vault>/<work_dir>/classification.jsonl)")
+	cmd.Flags().StringVar(&policyFlag, "policy", "", "Path to policy.yaml (default: <vault>/<work_dir>/policy.yaml)")
+	cmd.Flags().StringVarP(&outputFlag, "output", "o", "", "Output path for plan.md (default: <vault>/<work_dir>/plan.md)")
 	return cmd
 }
 
