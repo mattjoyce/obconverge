@@ -12,13 +12,13 @@ import (
 	"sort"
 
 	"github.com/mattjoyce/obconverge/internal/artifact"
+	"github.com/mattjoyce/obconverge/internal/links"
 	"github.com/mattjoyce/obconverge/internal/scan"
 )
 
 // Schema is the header schema string for classification.jsonl artifacts.
-// Bumped to v2 with the addition of FRONTMATTER-ONLY, FRONTMATTER-EQUAL,
-// and SECRETS buckets.
-const Schema = "classification/2"
+// Bumped to v3 with the addition of referrer counts.
+const Schema = "classification/3"
 
 // Bucket is the classifier's verdict for a pair (or single) of files.
 //
@@ -49,12 +49,22 @@ type Record struct {
 	// SECRETS records. Never contains the secret itself — just a pattern
 	// name like "anthropic" or "aws-access-key".
 	SecretPattern string `json:"secret_pattern,omitempty"`
+	// ReferrerCount is the number of incoming wikilinks / embeds to this
+	// file's basename. For unique records this is a scalar; for pair
+	// records see ReferrerCounts (both files share a basename but may
+	// have different link contexts — v1 reports the same count for
+	// both paths since Obsidian resolves by basename).
+	ReferrerCount int `json:"referrer_count,omitempty"`
 }
 
 // Options configures a classification run.
 type Options struct {
 	IndexPath          string
 	ClassificationPath string
+	// Graph, if non-nil, provides referrer counts that are stamped onto
+	// each record. Nil graph means ReferrerCount stays zero — fine for
+	// tests that don't care about link topology.
+	Graph *links.Graph
 }
 
 // Run reads the index and writes classification records grouping entries by
@@ -105,15 +115,20 @@ func Run(opts Options) error {
 		entries := byBasename[name]
 		sort.Slice(entries, func(i, j int) bool { return entries[i].Path < entries[j].Path })
 
+		refCount := 0
+		if opts.Graph != nil {
+			refCount = opts.Graph.Count(name)
+		}
+
 		if len(entries) == 1 {
-			if err := writeUnique(w, name, entries[0]); err != nil {
+			if err := writeUnique(w, name, entries[0], refCount); err != nil {
 				return err
 			}
 			continue
 		}
 		for i := 0; i < len(entries); i++ {
 			for j := i + 1; j < len(entries); j++ {
-				if err := writePair(w, name, entries[i], entries[j]); err != nil {
+				if err := writePair(w, name, entries[i], entries[j], refCount); err != nil {
 					return err
 				}
 			}
@@ -122,11 +137,12 @@ func Run(opts Options) error {
 	return nil
 }
 
-func writeUnique(w *artifact.Writer, name string, e scan.Entry) error {
+func writeUnique(w *artifact.Writer, name string, e scan.Entry, refCount int) error {
 	rec := Record{
-		Type:     "unique",
-		Basename: name,
-		Path:     e.Path,
+		Type:          "unique",
+		Basename:      name,
+		Path:          e.Path,
+		ReferrerCount: refCount,
 	}
 	if e.HasSecrets {
 		rec.Bucket = BucketSecrets
@@ -137,11 +153,12 @@ func writeUnique(w *artifact.Writer, name string, e scan.Entry) error {
 	return w.Write(rec)
 }
 
-func writePair(w *artifact.Writer, name string, a, b scan.Entry) error {
+func writePair(w *artifact.Writer, name string, a, b scan.Entry, refCount int) error {
 	rec := Record{
-		Type:     "pair",
-		Basename: name,
-		Paths:    []string{a.Path, b.Path},
+		Type:          "pair",
+		Basename:      name,
+		Paths:         []string{a.Path, b.Path},
+		ReferrerCount: refCount,
 	}
 	rec.Bucket, rec.SecretPattern = bucketFor(a, b)
 	return w.Write(rec)

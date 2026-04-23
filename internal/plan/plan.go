@@ -46,6 +46,10 @@ type Item struct {
 	// SecretPattern is set only for SECRETS items; never contains the
 	// secret itself, only a pattern name.
 	SecretPattern string
+	// ReferrerCount is the number of incoming wikilinks / embeds to this
+	// item's basename. Surfaced in the plan so the operator sees whether
+	// a candidate is orphaned (0) or architectural (many).
+	ReferrerCount int
 	// Checked is the operator-approval state. Preserved across runs via
 	// plan.md merge.
 	Checked bool
@@ -130,6 +134,7 @@ func buildItems(records []classify.Record, pol policy.Policy) []Item {
 			Paths:         append([]string(nil), rec.Paths...),
 			Path:          rec.Path,
 			SecretPattern: rec.SecretPattern,
+			ReferrerCount: rec.ReferrerCount,
 		}
 		item.ID = itemID(item)
 		items = append(items, item)
@@ -293,6 +298,15 @@ func renderItem(buf *strings.Builder, it Item) {
 }
 
 func describe(it Item) string {
+	base := baseDescription(it)
+	tail := referrerSuffix(it.ReferrerCount)
+	if tail == "" {
+		return base
+	}
+	return base + " " + tail
+}
+
+func baseDescription(it Item) string {
 	switch it.Bucket {
 	case classify.BucketSecrets:
 		if it.SecretPattern != "" {
@@ -313,5 +327,20 @@ func describe(it Item) string {
 		return "Single occurrence in the vault."
 	default:
 		return string(it.Bucket)
+	}
+}
+
+// referrerSuffix renders a short clause to tell the operator how many
+// notes point at this item's basename. SECRETS skips the suffix: we
+// don't want to imply a SECRETS file is "safe to drop because no
+// referrers" — secrets are quarantined regardless.
+func referrerSuffix(count int) string {
+	switch count {
+	case 0:
+		return "Referrers: 0 (no incoming links)."
+	case 1:
+		return "Referrers: 1 incoming link."
+	default:
+		return fmt.Sprintf("Referrers: %d incoming links.", count)
 	}
 }

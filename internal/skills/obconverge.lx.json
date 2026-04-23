@@ -86,7 +86,7 @@
   ],
   "artifacts": [
     {"name": "index.jsonl", "schema": "index/2", "description": "One Entry per regular file in the vault.", "first_line": "{\"type\":\"header\",\"schema\":\"index/2\",\"created\":\"<RFC3339>\"}"},
-    {"name": "classification.jsonl", "schema": "classification/2", "description": "One Record per pair or unique file.", "first_line": "{\"type\":\"header\",\"schema\":\"classification/2\",\"created\":\"<RFC3339>\"}"},
+    {"name": "classification.jsonl", "schema": "classification/3", "description": "One Record per pair or unique file; includes referrer_count (incoming wikilinks/embeds to the file's basename, resolved via frontmatter aliases).", "first_line": "{\"type\":\"header\",\"schema\":\"classification/3\",\"created\":\"<RFC3339>\"}"},
     {"name": "plan.md", "schema": "plan/1", "description": "Human-reviewable markdown checklist; operator ticks checkboxes to approve.", "first_lines": "Obsidian YAML frontmatter with tool/schema/created fields."}
   ],
   "config": {

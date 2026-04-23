@@ -27,8 +27,15 @@ lint:
 #         matches Obsidian's own behavior for vault subdirectories.
 #   G306  (WriteFile with 0o644): standard perms for user-readable output
 #         artifacts; vault notes themselves are typically 0o644.
+#   G122  (filepath.WalkDir callback uses race-prone path): obconverge walks
+#         the operator's local vault. TOCTOU between directory entry and
+#         ReadFile is acceptable for an offline auditor where the operator
+#         owns the filesystem; if a file is replaced mid-walk, re-running
+#         the scan is the answer. The os.Root API would change the read
+#         semantics in ways that matter for apply (future commit) more
+#         than it does here.
 sec:
-	gosec -severity medium -concurrency 1 -quiet -exclude=G304,G301,G306 ./...
+	gosec -severity medium -concurrency 1 -quiet -exclude=G304,G301,G306,G122 ./...
 
 test:
 	go test -race -count=1 ./...

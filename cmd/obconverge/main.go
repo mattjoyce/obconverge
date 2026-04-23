@@ -16,6 +16,7 @@ import (
 	"github.com/mattjoyce/obconverge/internal/classify"
 	"github.com/mattjoyce/obconverge/internal/config"
 	"github.com/mattjoyce/obconverge/internal/errcode"
+	"github.com/mattjoyce/obconverge/internal/links"
 	"github.com/mattjoyce/obconverge/internal/logging"
 	"github.com/mattjoyce/obconverge/internal/plan"
 	"github.com/mattjoyce/obconverge/internal/scan"
@@ -191,7 +192,14 @@ func newClassifyCmd() *cobra.Command {
 				return err
 			}
 			slog.Debug("classify starting", "index", in, "output", out)
-			if err := classify.Run(classify.Options{IndexPath: in, ClassificationPath: out}); err != nil {
+			// Build the referrer graph so classify can stamp referrer
+			// counts onto each record. Classify may read the vault
+			// (spec-explicit allowance for pure-read phases).
+			graph, err := links.Build(links.Options{VaultRoot: root})
+			if err != nil {
+				return fmt.Errorf("classify: build link graph: %w", err)
+			}
+			if err := classify.Run(classify.Options{IndexPath: in, ClassificationPath: out, Graph: graph}); err != nil {
 				return err
 			}
 			slog.Info("classify complete", "output", out)
