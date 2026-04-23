@@ -24,6 +24,7 @@ import (
 	"github.com/mattjoyce/obconverge/internal/scan"
 	"github.com/mattjoyce/obconverge/internal/secrets"
 	"github.com/mattjoyce/obconverge/internal/skills"
+	"github.com/mattjoyce/obconverge/internal/undo"
 )
 
 // version is stamped via -ldflags at release time; "dev" in local builds.
@@ -140,6 +141,7 @@ func newRoot() *cobra.Command {
 	root.AddCommand(newClassifyCmd())
 	root.AddCommand(newPlanCmd())
 	root.AddCommand(newApplyCmd())
+	root.AddCommand(newUndoCmd())
 	return root
 }
 
@@ -341,6 +343,48 @@ func newApplyCmd() *cobra.Command {
 	cmd.Flags().StringVar(&vaultFlag, "vault", "", "Path to Obsidian vault")
 	cmd.Flags().BoolVar(&executeFlag, "execute", false, "Actually mutate the vault (default: dry-run)")
 	cmd.Flags().StringVar(&secretsFlag, "secrets", "", "Override secret response: block|warn|silent (default: policy or block)")
+	return cmd
+}
+
+func newUndoCmd() *cobra.Command {
+	var vaultFlag string
+	var executeFlag bool
+	cmd := &cobra.Command{
+		Use:   "undo",
+		Short: "Reverse the most recent apply run by restoring files from trash",
+		Long: "undo reads <vault>/.obconverge/journal.jsonl, iterates Applied entries in " +
+			"LIFO order, and restores each file from its trash backup. drop ops restore " +
+			"the trashed file to its original path. merge-frontmatter ops restore the " +
+			"loser to its original path and overwrite the rewritten winner with its " +
+			"pre-merge backup. undo refuses to overwrite an existing file at the " +
+			"restore destination (operator must clear first). Default is dry-run; " +
+			"pass --execute to actually move files.",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			cfg := cfgFromCtx(cmd.Context())
+			root, err := resolveVault(vaultFlag, cfg.VaultPath)
+			if err != nil {
+				return err
+			}
+			slog.Debug("undo starting", "vault", root, "execute", executeFlag)
+			sum, _, err := undo.Run(undo.Options{
+				VaultRoot: root,
+				WorkDir:   cfg.WorkDir,
+				Execute:   executeFlag,
+			})
+			if err != nil {
+				return err
+			}
+			out := cmd.OutOrStdout()
+			if executeFlag {
+				_, _ = fmt.Fprintf(out, "undo complete: restored=%d skipped=%d\n", sum.Restored, sum.Skipped)
+			} else {
+				_, _ = fmt.Fprintf(out, "dry-run: would_restore=%d skipped=%d  (pass --execute to mutate)\n", sum.DryRun, sum.Skipped)
+			}
+			return nil
+		},
+	}
+	cmd.Flags().StringVar(&vaultFlag, "vault", "", "Path to Obsidian vault")
+	cmd.Flags().BoolVar(&executeFlag, "execute", false, "Actually move files (default: dry-run)")
 	return cmd
 }
 

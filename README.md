@@ -168,7 +168,7 @@ Agent-friendly behaviors:
 - [x] Link referrer index — wikilink / embed / heading-ref / block-ref detection with alias resolution; surfaced in `classification.jsonl` and `plan.md`
 - [x] `apply` (drop) — dry-run by default, `--execute` to mutate; hash-before-mutate with `hash_drift` skip; soft-delete to `.obconverge/trash/<timestamp>/`; refuses SECRETS (block/warn/silent modes) and linked notes; append-only journal
 - [x] `apply` (merge-frontmatter) — union-merge of frontmatter keys; loser trashed, winner rewritten atomically; scalar/type conflicts refuse with `frontmatter_conflict`
+- [x] `undo` — journal reversal: restore drops from trash and revert merge-frontmatter rewrites using the winner's pre-merge backup. Refuses to overwrite files the operator has edited post-apply.
 - [ ] `--rewrite-links` — lift the linked-note refusal by rewriting referrers
-- [ ] `undo` — journal reversal (restore from trash, unwind merges)
 - [ ] `TAG-DELTA` / `APPEND-ONLY` buckets
 - [ ] Import-graph purity invariant test

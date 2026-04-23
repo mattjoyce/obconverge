@@ -93,14 +93,19 @@ type Entry struct {
 	// file whose frontmatter contributed to the merge and which was
 	// then moved to trash.
 	SecondaryPath string `json:"secondary_path,omitempty"`
-	// TrashPath is where the soft-deleted file landed. For drop, that's
-	// Path's new location. For merge, it's SecondaryPath's new location.
-	TrashPath     string `json:"trash_path,omitempty"`
-	ContentHash   string `json:"content_hash,omitempty"`
-	ExpectedHash  string `json:"expected_hash,omitempty"`
-	ActualHash    string `json:"actual_hash,omitempty"`
-	Reason        Reason `json:"reason,omitempty"`
-	ReferrerCount int    `json:"referrer_count,omitempty"`
+	// TrashPath is where Path's pre-operation copy landed in trash.
+	// For drop, Path's original file was moved there. For merge, a
+	// backup of the winner (Path) was copied there before the rewrite —
+	// this is how undo restores the winner to its pre-merge state.
+	TrashPath string `json:"trash_path,omitempty"`
+	// SecondaryTrash is populated only by merge-frontmatter: where the
+	// loser (SecondaryPath) was moved. Always paired with SecondaryPath.
+	SecondaryTrash string `json:"secondary_trash,omitempty"`
+	ContentHash    string `json:"content_hash,omitempty"`
+	ExpectedHash   string `json:"expected_hash,omitempty"`
+	ActualHash     string `json:"actual_hash,omitempty"`
+	Reason         Reason `json:"reason,omitempty"`
+	ReferrerCount  int    `json:"referrer_count,omitempty"`
 	// SecretPattern is stamped when the record's bucket was SECRETS,
 	// regardless of whether apply refused or proceeded. Makes every
 	// secret-related action auditable even in warn / silent response
@@ -488,30 +493,49 @@ func applyMerge(opts Options, entry Entry, winner, loser string, byPath map[stri
 	merged := assembleFrontmatterFile(mergedFM, winBody)
 	entry.ContentHash = string(hashing.OfBytes(normalizeLineEndings(merged)))
 
-	trashPath := filepath.Join(trashRoot, loser)
-	entry.TrashPath, _ = filepath.Rel(opts.VaultRoot, trashPath)
+	// Two trash locations: a backup of the winner's pre-rewrite state
+	// (so undo can restore it) and the loser's trash destination.
+	winBackupAbs := filepath.Join(trashRoot, winner)
+	loserTrashAbs := filepath.Join(trashRoot, loser)
+	entry.TrashPath, _ = filepath.Rel(opts.VaultRoot, winBackupAbs)
+	entry.SecondaryTrash, _ = filepath.Rel(opts.VaultRoot, loserTrashAbs)
 
 	if !opts.Execute {
 		entry.Result = ResultDryRun
 		return entry
 	}
 
-	// Move loser to trash FIRST. If the rewrite of winner fails, the vault
-	// still has winner (unchanged) and loser is recoverable from trash —
-	// no data lost. If we wrote the winner first and then failed to trash
-	// the loser, we'd have two files that are no longer FRONTMATTER-ONLY.
-	if err := os.MkdirAll(filepath.Dir(trashPath), 0o755); err != nil {
+	// Step 1: back up the winner's current bytes to trash. We copy (not
+	// rename) because the winner's path must continue to exist for the
+	// subsequent atomic rewrite.
+	if err := os.MkdirAll(filepath.Dir(winBackupAbs), 0o755); err != nil {
 		entry.Result = ResultSkipped
 		entry.Reason = Reason(fmt.Sprintf("mkdir_trash_failed: %v", err))
 		return entry
 	}
-	if err := os.Rename(loseAbs, trashPath); err != nil {
+	if err := os.WriteFile(winBackupAbs, winBytes, 0o644); err != nil {
+		entry.Result = ResultSkipped
+		entry.Reason = Reason(fmt.Sprintf("backup_winner_failed: %v", err))
+		return entry
+	}
+
+	// Step 2: move loser to trash. If this fails the winner backup is
+	// already safe; no data loss.
+	if err := os.MkdirAll(filepath.Dir(loserTrashAbs), 0o755); err != nil {
+		entry.Result = ResultSkipped
+		entry.Reason = Reason(fmt.Sprintf("mkdir_trash_failed: %v", err))
+		return entry
+	}
+	if err := os.Rename(loseAbs, loserTrashAbs); err != nil {
 		entry.Result = ResultSkipped
 		entry.Reason = Reason(fmt.Sprintf("rename_failed: %v", err))
 		return entry
 	}
 
-	// Atomic rewrite of winner via temp file + rename.
+	// Step 3: atomic rewrite of winner via temp file + rename. If rename
+	// fails, the tmp file is cleaned up, the winner still holds its old
+	// content (atomic), and both trash backups remain — operator can
+	// undo or retry.
 	tmp := winAbs + ".obconverge.tmp"
 	if err := os.WriteFile(tmp, merged, 0o644); err != nil {
 		entry.Result = ResultSkipped
@@ -529,7 +553,8 @@ func applyMerge(opts Options, entry Entry, winner, loser string, byPath map[stri
 	slog.Info("apply: merged frontmatter",
 		"winner", winner,
 		"loser", loser,
-		"trash", entry.TrashPath)
+		"winner_backup", entry.TrashPath,
+		"loser_trash", entry.SecondaryTrash)
 	return entry
 }
 

@@ -450,12 +450,29 @@ func TestApply_MergeFrontmatter_TagUnion(t *testing.T) {
 				t.Errorf("journal SecondaryPath = %q, want Notes/B.md", e.SecondaryPath)
 			}
 			if e.TrashPath == "" {
-				t.Error("journal TrashPath should be set for merge")
+				t.Error("journal TrashPath (winner backup) should be set for merge")
+			}
+			if e.SecondaryTrash == "" {
+				t.Error("journal SecondaryTrash (loser trash) should be set for merge")
 			}
 		}
 	}
 	if !found {
 		t.Errorf("journal missing applied merge-frontmatter: %+v", journal)
+	}
+
+	// The winner backup must contain the pre-rewrite bytes.
+	backupPath := filepath.Join(root, ".obconverge", "trash", "20260423-100001", "Prod", "B.md")
+	backupBytes, berr := os.ReadFile(backupPath)
+	if berr != nil {
+		t.Fatalf("read winner backup: %v", berr)
+	}
+	bs := string(backupBytes)
+	if strings.Contains(bs, "alpha") {
+		t.Errorf("winner backup should not contain merged tags (loser's alpha); got:\n%s", bs)
+	}
+	if !strings.Contains(bs, "beta") || !strings.Contains(bs, "gamma") {
+		t.Errorf("winner backup should have winner's original tags beta/gamma; got:\n%s", bs)
 	}
 }
 

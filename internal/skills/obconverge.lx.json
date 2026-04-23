@@ -51,6 +51,24 @@
       ]
     },
     {
+      "name": "undo",
+      "summary": "Reverse the most recent apply run by restoring files from trash.",
+      "reads": ["<vault>/<work_dir>/journal.jsonl", "<vault>/<work_dir>/trash/"],
+      "writes": ["vault files (restored from trash)"],
+      "flags": [
+        {"long": "vault", "type": "string", "required": false, "description": "Path to Obsidian vault."},
+        {"long": "execute", "type": "bool", "required": false, "description": "Actually move files. Default is dry-run."}
+      ],
+      "notes": [
+        "Default mode is dry-run. --execute is required to actually mutate.",
+        "undo iterates journal Applied entries in LIFO order (most recent first).",
+        "drop reversal: rename trash_path -> path.",
+        "merge-frontmatter reversal: rename secondary_trash -> secondary_path (restore loser); rename trash_path -> path (overwrite rewritten winner with its pre-merge backup).",
+        "Refuses to overwrite an existing file at the restore destination (operator must clear first). Refuses if the trash backup is missing.",
+        "Does not itself produce a journal entry — redo is 're-run apply'. Keeps the audit trail in one place."
+      ]
+    },
+    {
       "name": "apply",
       "summary": "Execute the checked items in plan.md. The only phase that mutates the vault.",
       "reads": [
