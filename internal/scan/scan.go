@@ -20,10 +20,11 @@ import (
 	"github.com/mattjoyce/obconverge/internal/secrets"
 )
 
-// Schema is the header schema string for index.jsonl artifacts. Bumped to v3
-// with the addition of FrontmatterNoTagsHash (used by classify to detect
-// TAG-DELTA — pairs where frontmatter differs only in the tags key).
-const Schema = "index/3"
+// Schema is the header schema string for index.jsonl artifacts. Bumped to v4
+// with the addition of WhitespaceHash (used by classify to detect
+// WHITESPACE-ONLY — pairs that differ only in trailing whitespace or
+// blank-line padding).
+const Schema = "index/4"
 
 // Entry describes one regular file discovered during a scan. It is the only
 // record type written into index.jsonl (aside from the header).
@@ -41,6 +42,12 @@ type Entry struct {
 	// ContentHash is the SHA-256 of the file's bytes with CRLF collapsed to LF.
 	// Two files that differ only in line endings share a ContentHash.
 	ContentHash string `json:"content_hash"`
+	// WhitespaceHash is the SHA-256 of the file's bytes after CRLF → LF,
+	// trailing-space/tab trimmed from each line, and trailing blank
+	// lines removed. Two files that differ only in whitespace noise
+	// share a WhitespaceHash. Superset of ContentHash (anything that
+	// matches on ContentHash also matches on WhitespaceHash).
+	WhitespaceHash string `json:"whitespace_hash"`
 	// FrontmatterHash is the SHA-256 of the CRLF-normalized frontmatter YAML,
 	// or empty if the file has no frontmatter (or is not markdown).
 	FrontmatterHash string `json:"frontmatter_hash,omitempty"`
@@ -172,12 +179,13 @@ func analyze(path, relSlash string, info os.FileInfo, detector *secrets.Detector
 		return Entry{}, err
 	}
 	entry := Entry{
-		Path:        relSlash,
-		Basename:    filepath.Base(relSlash),
-		Size:        info.Size(),
-		ModTime:     info.ModTime().UTC(),
-		ByteHash:    string(hashing.OfBytes(b)),
-		ContentHash: string(hashing.OfBytes(normalizeLineEndings(b))),
+		Path:           relSlash,
+		Basename:       filepath.Base(relSlash),
+		Size:           info.Size(),
+		ModTime:        info.ModTime().UTC(),
+		ByteHash:       string(hashing.OfBytes(b)),
+		ContentHash:    string(hashing.OfBytes(normalizeLineEndings(b))),
+		WhitespaceHash: string(hashing.OfBytes(normalizeWhitespace(b))),
 	}
 
 	// Frontmatter + secret analysis only applies to markdown.
@@ -213,6 +221,73 @@ func analyze(path, relSlash string, info os.FileInfo, detector *secrets.Detector
 
 func isMarkdown(relSlash string) bool {
 	return strings.EqualFold(filepath.Ext(relSlash), ".md")
+}
+
+// normalizeWhitespace returns a canonical form of b useful for the
+// WHITESPACE-ONLY bucket: CRLF -> LF, trailing space/tab trimmed from
+// every line, and trailing blank lines collapsed. Leading whitespace
+// (indentation) is preserved because it's semantically load-bearing in
+// Markdown (code blocks, list nesting).
+func normalizeWhitespace(b []byte) []byte {
+	if len(b) == 0 {
+		return b
+	}
+	lf := normalizeLineEndings(b)
+	lines := bytesSplitLines(lf)
+	for i, line := range lines {
+		lines[i] = trimRightWS(line)
+	}
+	for len(lines) > 0 && len(lines[len(lines)-1]) == 0 {
+		lines = lines[:len(lines)-1]
+	}
+	return bytesJoinLines(lines)
+}
+
+// bytesSplitLines splits on '\n' without a final empty element if the
+// input ended with a newline.
+func bytesSplitLines(b []byte) [][]byte {
+	var out [][]byte
+	start := 0
+	for i := 0; i < len(b); i++ {
+		if b[i] == '\n' {
+			out = append(out, b[start:i])
+			start = i + 1
+		}
+	}
+	if start < len(b) {
+		out = append(out, b[start:])
+	} else if start == len(b) {
+		// Input ended with newline. Represent that as a trailing empty
+		// line so we can distinguish "foo\n" from "foo".
+		out = append(out, nil)
+	}
+	return out
+}
+
+func bytesJoinLines(lines [][]byte) []byte {
+	if len(lines) == 0 {
+		return nil
+	}
+	total := 0
+	for _, l := range lines {
+		total += len(l) + 1
+	}
+	out := make([]byte, 0, total)
+	for i, l := range lines {
+		out = append(out, l...)
+		if i < len(lines)-1 {
+			out = append(out, '\n')
+		}
+	}
+	return out
+}
+
+func trimRightWS(b []byte) []byte {
+	end := len(b)
+	for end > 0 && (b[end-1] == ' ' || b[end-1] == '\t') {
+		end--
+	}
+	return b[:end]
 }
 
 func normalizeLineEndings(b []byte) []byte {

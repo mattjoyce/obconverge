@@ -20,8 +20,8 @@ import (
 )
 
 // Schema is the header schema string for classification.jsonl artifacts.
-// Bumped to v5 with the addition of the APPEND-ONLY bucket.
-const Schema = "classification/5"
+// Bumped to v6 with the addition of the WHITESPACE-ONLY bucket.
+const Schema = "classification/6"
 
 // Bucket is the classifier's verdict for a pair (or single) of files.
 //
@@ -33,6 +33,7 @@ type Bucket string
 const (
 	BucketExact            Bucket = "EXACT"
 	BucketCRLFOnly         Bucket = "CRLF-ONLY"
+	BucketWhitespaceOnly   Bucket = "WHITESPACE-ONLY"
 	BucketTagDelta         Bucket = "TAG-DELTA"
 	BucketFrontmatterOnly  Bucket = "FRONTMATTER-ONLY"
 	BucketFrontmatterEqual Bucket = "FRONTMATTER-EQUAL"
@@ -234,6 +235,13 @@ func bucketFor(a, b scan.Entry) (Bucket, string) {
 	}
 	if a.ContentHash == b.ContentHash {
 		return BucketCRLFOnly, ""
+	}
+	// Broader whitespace normalization: trailing spaces/tabs per line,
+	// trailing blank lines removed. Anything CRLF-ONLY also matches here,
+	// but we checked CRLF first so WHITESPACE-ONLY catches the cases
+	// where CRLF alone wasn't enough.
+	if a.WhitespaceHash != "" && a.WhitespaceHash == b.WhitespaceHash {
+		return BucketWhitespaceOnly, ""
 	}
 	// Body match, frontmatter differs. Distinguish the tag-only case:
 	// TAG-DELTA when both sides have frontmatter AND the tags-stripped

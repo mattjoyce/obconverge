@@ -41,6 +41,36 @@ func TestClassify_CRLFOnlyDifference(t *testing.T) {
 	}
 }
 
+func TestClassify_WhitespaceOnlyDifference(t *testing.T) {
+	// Same content but one file has trailing spaces on a line and an
+	// extra blank line at the end. CRLF normalization alone wouldn't
+	// collapse them — WHITESPACE-ONLY should catch it.
+	root := testvault.Build(t,
+		testvault.File{Path: "Notes/Ws.md", Content: "hello\nworld\n"},
+		testvault.File{Path: "Prod/Ws.md", Content: "hello   \nworld\t\n\n\n"},
+	)
+	records := scanAndClassify(t, root)
+	pair := findPair(t, records, "Ws.md")
+	if pair.Bucket != classify.BucketWhitespaceOnly {
+		t.Errorf("bucket = %s, want WHITESPACE-ONLY", pair.Bucket)
+	}
+}
+
+func TestClassify_LeadingIndentationIsSemantic(t *testing.T) {
+	// Leading whitespace is NOT trimmed (it's load-bearing in Markdown
+	// for code blocks and list nesting). A leading-tab difference
+	// should NOT collapse to WHITESPACE-ONLY.
+	root := testvault.Build(t,
+		testvault.File{Path: "Notes/Indent.md", Content: "a\n    code block\nb\n"},
+		testvault.File{Path: "Prod/Indent.md", Content: "a\ncode block\nb\n"},
+	)
+	records := scanAndClassify(t, root)
+	pair := findPair(t, records, "Indent.md")
+	if pair.Bucket == classify.BucketWhitespaceOnly {
+		t.Errorf("bucket = %s, leading indentation should NOT collapse", pair.Bucket)
+	}
+}
+
 func TestClassify_TagDelta_OnlyTagsDiffer(t *testing.T) {
 	root := testvault.Build(t,
 		testvault.File{Path: "Notes/Delta.md", Content: "---\ntitle: Same\ntags:\n  - a\n---\n\nshared body\n"},

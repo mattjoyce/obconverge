@@ -123,7 +123,7 @@
   "buckets": [
     {"name": "EXACT", "condition": "byte-identical", "default_action": "drop", "implemented": true},
     {"name": "CRLF-ONLY", "condition": "equal after line-ending normalization", "default_action": "drop", "implemented": true},
-    {"name": "WHITESPACE-ONLY", "condition": "equal after whitespace normalization", "default_action": "drop", "implemented": false},
+    {"name": "WHITESPACE-ONLY", "condition": "equal after CRLF -> LF, trailing whitespace trimmed per line, and trailing blank lines removed", "default_action": "drop", "implemented": true},
     {"name": "TAG-DELTA", "condition": "body identical; frontmatter differs only in the top-level tags key", "default_action": "merge-frontmatter", "implemented": true},
     {"name": "FRONTMATTER-ONLY", "condition": "body identical, frontmatter differs (in more than just tags)", "default_action": "merge-frontmatter", "implemented": true},
     {"name": "FRONTMATTER-EQUAL", "condition": "frontmatter identical, body differs", "default_action": "review", "implemented": true},

@@ -75,6 +75,7 @@ func Default() Policy {
 		Rules: map[classify.Bucket]Action{
 			classify.BucketExact:            ActionDrop,
 			classify.BucketCRLFOnly:         ActionDrop,
+			classify.BucketWhitespaceOnly:   ActionDrop,
 			classify.BucketTagDelta:         ActionMergeFrontmatter,
 			classify.BucketFrontmatterOnly:  ActionMergeFrontmatter,
 			classify.BucketFrontmatterEqual: ActionReview,

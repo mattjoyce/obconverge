@@ -20,6 +20,7 @@ Scans an Obsidian vault and produces three artifacts under `<vault>/.obconverge/
    | `DIVERGED` | both differ non-trivially |
    | `SECRETS` | contains credential-shaped strings (wins over any other verdict) |
    | `UNIQUE` | lone occurrence |
+   | `WHITESPACE-ONLY` | equal after trailing-space trimming + blank-line collapse |
 
 3. `plan.md` — an Obsidian-friendly markdown checklist the operator reviews *in the editor*, with a stable action-ID per item. Re-running `plan` preserves the check state for items whose IDs still apply.
 
