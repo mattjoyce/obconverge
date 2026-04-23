@@ -1,5 +1,10 @@
 .PHONY: all fmt vet lint sec test check build install clean
 
+# Version string stamped into the binary via -ldflags. Override at the CLI:
+#   make install VERSION=v0.2.0
+VERSION ?= v0.1.0-audit
+LDFLAGS := -X main.version=$(VERSION)
+
 # Single canonical check target — CI / pre-merge must pass this.
 all: check
 
@@ -29,10 +34,10 @@ test:
 	go test -race -count=1 ./...
 
 build:
-	go build -o obconverge ./cmd/obconverge
+	go build -ldflags "$(LDFLAGS)" -o obconverge ./cmd/obconverge
 
 install:
-	go install ./cmd/obconverge
+	go install -ldflags "$(LDFLAGS)" ./cmd/obconverge
 
 clean:
 	rm -f obconverge
