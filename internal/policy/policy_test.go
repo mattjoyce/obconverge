@@ -119,3 +119,58 @@ func TestActionFor_UnknownBucketFallsBackToReview(t *testing.T) {
 		t.Errorf("ActionFor unknown bucket = %s, want review (safest)", got)
 	}
 }
+
+func TestDefault_SecretResponseIsBlock(t *testing.T) {
+	if got := policy.Default().SecretResponse; got != policy.SecretBlock {
+		t.Errorf("Default.SecretResponse = %s, want block (safest)", got)
+	}
+}
+
+func TestLoad_SecretResponseOverride(t *testing.T) {
+	for _, mode := range []string{"block", "warn", "silent"} {
+		t.Run(mode, func(t *testing.T) {
+			yaml := "secret_response: " + mode + "\n"
+			path := filepath.Join(t.TempDir(), "policy.yaml")
+			if err := os.WriteFile(path, []byte(yaml), 0o644); err != nil {
+				t.Fatalf("write policy: %v", err)
+			}
+			p, err := policy.Load(path)
+			if err != nil {
+				t.Fatalf("Load: %v", err)
+			}
+			if string(p.SecretResponse) != mode {
+				t.Errorf("SecretResponse = %s, want %s", p.SecretResponse, mode)
+			}
+		})
+	}
+}
+
+func TestLoad_SecretResponseUnknownIsError(t *testing.T) {
+	yaml := "secret_response: scream\n"
+	path := filepath.Join(t.TempDir(), "policy.yaml")
+	if err := os.WriteFile(path, []byte(yaml), 0o644); err != nil {
+		t.Fatalf("write policy: %v", err)
+	}
+	_, err := policy.Load(path)
+	if err == nil {
+		t.Fatal("expected error for unknown secret_response")
+	}
+	if !strings.Contains(err.Error(), "scream") {
+		t.Errorf("error should name the bad value: %v", err)
+	}
+}
+
+func TestParseSecretResponse(t *testing.T) {
+	for _, mode := range []string{"block", "warn", "silent"} {
+		got, err := policy.ParseSecretResponse(mode)
+		if err != nil {
+			t.Errorf("ParseSecretResponse(%q): %v", mode, err)
+		}
+		if string(got) != mode {
+			t.Errorf("ParseSecretResponse(%q) = %s, want %s", mode, got, mode)
+		}
+	}
+	if _, err := policy.ParseSecretResponse("invalid"); err == nil {
+		t.Error("ParseSecretResponse(invalid) should error")
+	}
+}

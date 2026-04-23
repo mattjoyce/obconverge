@@ -105,9 +105,17 @@ rules:
   DIVERGED: review
   SECRETS: quarantine
   UNIQUE: keep
+
+# How apply treats SECRETS-bucket files with a mutating action.
+# Only relevant if you override the SECRETS rule to something other
+# than quarantine. Default: block.
+#   block   — refuse the action; journal records reason secrets_bucket
+#   warn    — proceed; log a warning; journal stamps secret_pattern
+#   silent  — proceed quietly; journal still stamps secret_pattern
+secret_response: block
 ```
 
-Unknown bucket names or action names are a hard error — better to fail loud than do the wrong thing to a vault.
+Unknown bucket names or action names are a hard error — better to fail loud than do the wrong thing to a vault. Per-run override: `obconverge apply --secrets warn`.
 
 ## Stance
 

@@ -12,6 +12,7 @@ import (
 	"github.com/mattjoyce/obconverge/internal/artifact"
 	"github.com/mattjoyce/obconverge/internal/classify"
 	"github.com/mattjoyce/obconverge/internal/plan"
+	"github.com/mattjoyce/obconverge/internal/policy"
 	"github.com/mattjoyce/obconverge/internal/scan"
 	"github.com/mattjoyce/obconverge/internal/secrets"
 	"github.com/mattjoyce/obconverge/internal/testvault"
@@ -197,6 +198,32 @@ func TestApply_RefusesLinkedNote(t *testing.T) {
 	}
 }
 
+// runApplyPolicy runs apply with a custom policy override (useful for
+// exercising secret-response modes where the default action for SECRETS
+// is quarantine).
+func runApplyPolicy(t *testing.T, root string, execute bool, pol *policy.Policy, mode policy.SecretResponse) apply.Summary {
+	t.Helper()
+	sum, err := apply.Run(apply.Options{
+		VaultRoot:      root,
+		Execute:        execute,
+		Policy:         pol,
+		SecretResponse: mode,
+		Now:            time.Date(2026, 4, 23, 10, 0, 1, 0, time.UTC),
+	})
+	if err != nil {
+		t.Fatalf("apply: %v", err)
+	}
+	return sum
+}
+
+// dropPolicy returns a policy that maps SECRETS -> drop so secrets
+// response mode actually kicks in (the default quarantine is a no-op).
+func dropPolicy() *policy.Policy {
+	p := policy.Default()
+	p.Rules[classify.BucketSecrets] = policy.ActionDrop
+	return &p
+}
+
 func TestApply_RefusesSecretsBucket(t *testing.T) {
 	root := setup(t,
 		testvault.File{Path: "Notes/Keys.md", Content: "AKIAIOSFODNN7EXAMPLE\n"},
@@ -204,12 +231,14 @@ func TestApply_RefusesSecretsBucket(t *testing.T) {
 	)
 	tickAll(t, root)
 
-	sum := runApply(t, root, true)
+	// Use drop policy so the SECRETS action is mutating; block mode
+	// should then refuse.
+	sum := runApplyPolicy(t, root, true, dropPolicy(), policy.SecretBlock)
 	if sum.Refused != 1 {
 		t.Errorf("Refused = %d, want 1: summary=%+v", sum.Refused, sum)
 	}
 	if sum.Applied != 0 {
-		t.Errorf("Applied = %d, want 0 (SECRETS bucket)", sum.Applied)
+		t.Errorf("Applied = %d, want 0 (SECRETS bucket, block mode)", sum.Applied)
 	}
 
 	journal := readJournal(t, root)
@@ -217,10 +246,95 @@ func TestApply_RefusesSecretsBucket(t *testing.T) {
 	for _, e := range journal {
 		if e.Result == apply.ResultRefused && e.Reason == apply.ReasonSecretsBucket {
 			found = true
+			if e.SecretPattern != "aws-access-key" {
+				t.Errorf("SecretPattern = %q, want aws-access-key", e.SecretPattern)
+			}
 		}
 	}
 	if !found {
 		t.Errorf("journal missing secrets_bucket refusal: %+v", journal)
+	}
+}
+
+func TestApply_SecretsWarnMode_Proceeds(t *testing.T) {
+	root := setup(t,
+		testvault.File{Path: "Notes/Keys.md", Content: "AKIAIOSFODNN7EXAMPLE\n"},
+		testvault.File{Path: "Prod/Keys.md", Content: "AKIAIOSFODNN7EXAMPLE\n"},
+	)
+	tickAll(t, root)
+
+	sum := runApplyPolicy(t, root, true, dropPolicy(), policy.SecretWarn)
+	if sum.Applied != 1 {
+		t.Errorf("Applied = %d, want 1 (warn mode proceeds): summary=%+v", sum.Applied, sum)
+	}
+	if sum.Refused != 0 {
+		t.Errorf("Refused = %d, want 0 in warn mode", sum.Refused)
+	}
+
+	// Journal must still stamp the secret pattern so the decision is auditable.
+	journal := readJournal(t, root)
+	found := false
+	for _, e := range journal {
+		if e.Result == apply.ResultApplied && e.SecretPattern == "aws-access-key" {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("journal should record SecretPattern on applied entry in warn mode: %+v", journal)
+	}
+
+	// Dropped file should have moved to trash.
+	trashMatches, _ := filepath.Glob(filepath.Join(root, ".obconverge", "trash", "*", "Notes", "Keys.md"))
+	if len(trashMatches) != 1 {
+		t.Errorf("warn mode should drop Notes/Keys.md; trash = %v", trashMatches)
+	}
+}
+
+func TestApply_SecretsSilentMode_Proceeds(t *testing.T) {
+	root := setup(t,
+		testvault.File{Path: "Notes/Keys.md", Content: "AKIAIOSFODNN7EXAMPLE\n"},
+		testvault.File{Path: "Prod/Keys.md", Content: "AKIAIOSFODNN7EXAMPLE\n"},
+	)
+	tickAll(t, root)
+
+	sum := runApplyPolicy(t, root, true, dropPolicy(), policy.SecretSilent)
+	if sum.Applied != 1 {
+		t.Errorf("Applied = %d, want 1 (silent mode proceeds): summary=%+v", sum.Applied, sum)
+	}
+
+	// Journal still records SecretPattern — silent only suppresses
+	// operator-facing noise, not audit trail.
+	journal := readJournal(t, root)
+	found := false
+	for _, e := range journal {
+		if e.Result == apply.ResultApplied && e.SecretPattern == "aws-access-key" {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("journal should still record SecretPattern in silent mode: %+v", journal)
+	}
+}
+
+func TestApply_SecretsWithQuarantinePolicy_NoOpRegardlessOfMode(t *testing.T) {
+	// Default policy maps SECRETS -> quarantine, which is a no-op. Mode
+	// selection is irrelevant here; nothing mutates.
+	root := setup(t,
+		testvault.File{Path: "Notes/Keys.md", Content: "AKIAIOSFODNN7EXAMPLE\n"},
+		testvault.File{Path: "Prod/Keys.md", Content: "AKIAIOSFODNN7EXAMPLE\n"},
+	)
+	tickAll(t, root)
+
+	for _, mode := range []policy.SecretResponse{policy.SecretBlock, policy.SecretWarn, policy.SecretSilent} {
+		t.Run(string(mode), func(t *testing.T) {
+			sum := runApplyPolicy(t, root, false, nil, mode) // dry-run, default policy
+			if sum.Applied != 0 {
+				t.Errorf("Applied = %d, want 0 (quarantine is no-op)", sum.Applied)
+			}
+			if sum.Refused != 0 {
+				t.Errorf("Refused = %d, want 0 (quarantine is not mutating, no refuse needed)", sum.Refused)
+			}
+		})
 	}
 }
 

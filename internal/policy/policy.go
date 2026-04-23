@@ -35,25 +35,53 @@ const (
 	ActionKeep Action = "keep"
 )
 
-// Policy maps each classifier bucket to the action obconverge will propose.
+// SecretResponse controls what apply does when it encounters a SECRETS-
+// bucket file whose action has been approved in the plan.
+//
+//   - SecretBlock   — refuse the action; journal records a refusal with
+//     reason secrets_bucket. This is the safe default.
+//   - SecretWarn    — proceed with the action but log a warning to
+//     stderr; the journal's SecretPattern field is
+//     still stamped so the decision is auditable.
+//   - SecretSilent  — proceed without logging. The journal still
+//     records SecretPattern for audit; only the
+//     operator-facing noise is suppressed.
+//
+// The classifier bucket assignment and plan rendering are unaffected —
+// SECRETS always wins at classify time, plan always shows the pattern.
+// Only the response at apply time changes.
+type SecretResponse string
+
+const (
+	SecretBlock  SecretResponse = "block"
+	SecretWarn   SecretResponse = "warn"
+	SecretSilent SecretResponse = "silent"
+)
+
+// Policy maps each classifier bucket to the action obconverge will
+// propose, plus global apply-time knobs.
 type Policy struct {
-	Rules map[classify.Bucket]Action
+	Rules          map[classify.Bucket]Action
+	SecretResponse SecretResponse
 }
 
 // Default returns conservative defaults: destructive actions only for the
 // three "proven-safe" buckets (EXACT, CRLF-ONLY, WHITESPACE-ONLY), merge
 // for FRONTMATTER-ONLY, review for anything ambiguous, quarantine for
-// SECRETS, keep for UNIQUE.
+// SECRETS, keep for UNIQUE. Secret response defaults to Block.
 func Default() Policy {
-	return Policy{Rules: map[classify.Bucket]Action{
-		classify.BucketExact:            ActionDrop,
-		classify.BucketCRLFOnly:         ActionDrop,
-		classify.BucketFrontmatterOnly:  ActionMergeFrontmatter,
-		classify.BucketFrontmatterEqual: ActionReview,
-		classify.BucketDiverged:         ActionReview,
-		classify.BucketSecrets:          ActionQuarantine,
-		classify.BucketUnique:           ActionKeep,
-	}}
+	return Policy{
+		Rules: map[classify.Bucket]Action{
+			classify.BucketExact:            ActionDrop,
+			classify.BucketCRLFOnly:         ActionDrop,
+			classify.BucketFrontmatterOnly:  ActionMergeFrontmatter,
+			classify.BucketFrontmatterEqual: ActionReview,
+			classify.BucketDiverged:         ActionReview,
+			classify.BucketSecrets:          ActionQuarantine,
+			classify.BucketUnique:           ActionKeep,
+		},
+		SecretResponse: SecretBlock,
+	}
 }
 
 // Load reads a policy YAML file at path and merges its rules over the
@@ -70,7 +98,8 @@ func Load(path string) (Policy, error) {
 		return p, fmt.Errorf("policy: read %s: %w", path, err)
 	}
 	var file struct {
-		Rules map[string]string `yaml:"rules"`
+		Rules          map[string]string `yaml:"rules"`
+		SecretResponse string            `yaml:"secret_response"`
 	}
 	if err := yaml.Unmarshal(data, &file); err != nil {
 		return p, fmt.Errorf("policy: parse %s: %w", path, err)
@@ -86,7 +115,28 @@ func Load(path string) (Policy, error) {
 		}
 		p.Rules[b] = a
 	}
+	if file.SecretResponse != "" {
+		sr, err := parseSecretResponse(file.SecretResponse)
+		if err != nil {
+			return p, err
+		}
+		p.SecretResponse = sr
+	}
 	return p, nil
+}
+
+// ParseSecretResponse validates and returns a SecretResponse.
+// Exposed so the CLI can validate the --secrets flag override.
+func ParseSecretResponse(s string) (SecretResponse, error) {
+	return parseSecretResponse(s)
+}
+
+func parseSecretResponse(s string) (SecretResponse, error) {
+	switch SecretResponse(s) {
+	case SecretBlock, SecretWarn, SecretSilent:
+		return SecretResponse(s), nil
+	}
+	return "", fmt.Errorf("policy: unknown secret_response %q (want block|warn|silent)", s)
 }
 
 // ActionFor returns the action for the given bucket, falling back to the

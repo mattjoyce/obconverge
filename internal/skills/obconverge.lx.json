@@ -65,14 +65,16 @@
       ],
       "flags": [
         {"long": "vault", "type": "string", "required": false, "description": "Path to Obsidian vault."},
-        {"long": "execute", "type": "bool", "required": false, "description": "Actually mutate the vault. Default is dry-run."}
+        {"long": "execute", "type": "bool", "required": false, "description": "Actually mutate the vault. Default is dry-run."},
+        {"long": "secrets", "type": "string", "required": false, "description": "Secret response mode override: block | warn | silent. Defaults to the policy's secret_response (default: block)."}
       ],
       "notes": [
         "Default mode is dry-run. --execute is required to actually mutate.",
         "Every action is journaled to journal.jsonl (append-only, fsynced per write) as one of: applied, skipped, refused, dry-run.",
         "Before every mutation, the source file is re-hashed. If the hash has drifted since the plan was written, the action is skipped with reason hash_drift.",
         "Files whose basename has any incoming wikilink or embed are refused (reason linked_note) until --rewrite-links lands.",
-        "SECRETS-bucket files are always refused (reason secrets_bucket). apply never mutates a file containing credentials.",
+        "SECRETS-bucket handling depends on the response mode: block refuses with reason secrets_bucket (default); warn proceeds with a logged warning; silent proceeds quietly. The journal always stamps secret_pattern for audit, regardless of mode.",
+        "Secret response modes only matter when the policy's action for SECRETS is mutating (drop, merge-frontmatter). The default policy maps SECRETS to quarantine (no-op), so response modes don't apply unless you override the policy.",
         "merge-frontmatter action is not yet implemented; it is skipped with reason not_implemented.",
         "Deletions are soft: files move to .obconverge/trash/<timestamp>/<original-path>. Hard delete is not yet supported."
       ]

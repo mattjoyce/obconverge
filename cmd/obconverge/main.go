@@ -20,6 +20,7 @@ import (
 	"github.com/mattjoyce/obconverge/internal/links"
 	"github.com/mattjoyce/obconverge/internal/logging"
 	"github.com/mattjoyce/obconverge/internal/plan"
+	"github.com/mattjoyce/obconverge/internal/policy"
 	"github.com/mattjoyce/obconverge/internal/scan"
 	"github.com/mattjoyce/obconverge/internal/secrets"
 	"github.com/mattjoyce/obconverge/internal/skills"
@@ -264,33 +265,63 @@ func newPlanCmd() *cobra.Command {
 }
 
 func newApplyCmd() *cobra.Command {
-	var vaultFlag string
+	var vaultFlag, secretsFlag string
 	var executeFlag bool
 	cmd := &cobra.Command{
 		Use:   "apply",
 		Short: "Execute the checked items in plan.md against the vault",
 		Long: "apply reads plan.md, classification.jsonl, and index.jsonl; builds the " +
-			"link graph; and processes every checked action. SECRETS-bucket files and " +
-			"files with incoming wikilinks are refused. Files whose content hash has " +
+			"link graph; and processes every checked action. Files whose content hash has " +
 			"drifted since plan was written are skipped. Deletions are soft: files " +
 			"move to .obconverge/trash/<timestamp>/. Every outcome is journaled to " +
-			".obconverge/journal.jsonl. Default mode is dry-run; pass --execute to mutate.",
+			".obconverge/journal.jsonl.\n\n" +
+			"Secret handling: when a SECRETS-bucket file has a mutating action approved " +
+			"in the plan, --secrets controls apply's response: block (refuse, safe " +
+			"default), warn (proceed with a logged warning), or silent (proceed quietly). " +
+			"Non-mutating actions (quarantine/review/keep) are unaffected. The policy " +
+			"file can set the default via secret_response.\n\n" +
+			"Default mode is dry-run; pass --execute to mutate.",
 		RunE: func(cmd *cobra.Command, args []string) error {
 			cfg := cfgFromCtx(cmd.Context())
 			root, err := resolveVault(vaultFlag, cfg.VaultPath)
 			if err != nil {
 				return err
 			}
+
+			// Load policy so apply knows which action applies to each bucket,
+			// and to pick up secret_response defaults from the file.
+			polFile := cfg.PolicyFile
+			if polFile == "" {
+				polFile = "policy.yaml"
+			}
+			polPath := filepath.Join(root, cfg.WorkDir, polFile)
+			pol, err := policy.Load(polPath)
+			if err != nil {
+				return fmt.Errorf("%w: %v", errcode.ErrValidation, err)
+			}
+
+			// CLI --secrets override.
+			secretMode := pol.SecretResponse
+			if secretsFlag != "" {
+				m, err := policy.ParseSecretResponse(secretsFlag)
+				if err != nil {
+					return fmt.Errorf("%w: %v", errcode.ErrUsage, err)
+				}
+				secretMode = m
+			}
+
 			mode := "dry-run"
 			if executeFlag {
 				mode = "apply"
 			}
-			slog.Debug("apply starting", "vault", root, "mode", mode)
+			slog.Debug("apply starting", "vault", root, "mode", mode, "secret_response", secretMode)
 
 			sum, err := apply.Run(apply.Options{
-				VaultRoot: root,
-				WorkDir:   cfg.WorkDir,
-				Execute:   executeFlag,
+				VaultRoot:      root,
+				WorkDir:        cfg.WorkDir,
+				Execute:        executeFlag,
+				Policy:         &pol,
+				SecretResponse: secretMode,
 			})
 			if err != nil {
 				return err
@@ -309,6 +340,7 @@ func newApplyCmd() *cobra.Command {
 	}
 	cmd.Flags().StringVar(&vaultFlag, "vault", "", "Path to Obsidian vault")
 	cmd.Flags().BoolVar(&executeFlag, "execute", false, "Actually mutate the vault (default: dry-run)")
+	cmd.Flags().StringVar(&secretsFlag, "secrets", "", "Override secret response: block|warn|silent (default: policy or block)")
 	return cmd
 }
 

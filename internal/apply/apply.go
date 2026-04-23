@@ -39,6 +39,7 @@ import (
 	"github.com/mattjoyce/obconverge/internal/hashing"
 	"github.com/mattjoyce/obconverge/internal/links"
 	"github.com/mattjoyce/obconverge/internal/plan"
+	"github.com/mattjoyce/obconverge/internal/policy"
 	"github.com/mattjoyce/obconverge/internal/scan"
 )
 
@@ -78,16 +79,21 @@ const (
 
 // Entry is one journal record.
 type Entry struct {
-	ActionID      string    `json:"action_id"`
-	Op            Op        `json:"op"`
-	Result        Result    `json:"result"`
-	Path          string    `json:"path,omitempty"`
-	TrashPath     string    `json:"trash_path,omitempty"`
-	ContentHash   string    `json:"content_hash,omitempty"`
-	ExpectedHash  string    `json:"expected_hash,omitempty"`
-	ActualHash    string    `json:"actual_hash,omitempty"`
-	Reason        Reason    `json:"reason,omitempty"`
-	ReferrerCount int       `json:"referrer_count,omitempty"`
+	ActionID      string `json:"action_id"`
+	Op            Op     `json:"op"`
+	Result        Result `json:"result"`
+	Path          string `json:"path,omitempty"`
+	TrashPath     string `json:"trash_path,omitempty"`
+	ContentHash   string `json:"content_hash,omitempty"`
+	ExpectedHash  string `json:"expected_hash,omitempty"`
+	ActualHash    string `json:"actual_hash,omitempty"`
+	Reason        Reason `json:"reason,omitempty"`
+	ReferrerCount int    `json:"referrer_count,omitempty"`
+	// SecretPattern is stamped when the record's bucket was SECRETS,
+	// regardless of whether apply refused or proceeded. Makes every
+	// secret-related action auditable even in warn / silent response
+	// modes.
+	SecretPattern string    `json:"secret_pattern,omitempty"`
 	AppliedAt     time.Time `json:"applied_at"`
 }
 
@@ -119,6 +125,15 @@ type Options struct {
 	// Execute controls whether apply actually mutates the vault. Default
 	// false — dry-run. Real mutations require passing true explicitly.
 	Execute bool
+	// SecretResponse selects how apply treats SECRETS-bucket items whose
+	// policy-assigned action is a mutating one (drop, merge-frontmatter).
+	// For no-op actions (quarantine/review/keep) the mode doesn't matter
+	// because apply never mutates. Defaults to SecretBlock if zero-valued.
+	SecretResponse policy.SecretResponse
+	// Policy, if non-nil, is consulted via ActionFor(bucket) to decide
+	// what apply should do with each ticked item. If nil, defaults are
+	// used (policy.Default()).
+	Policy *policy.Policy
 	// Now lets tests inject a deterministic timestamp for the trash dir
 	// name and journal records.
 	Now time.Time
@@ -144,6 +159,14 @@ func Run(opts Options) (Summary, error) {
 	}
 	if opts.JournalPath == "" {
 		opts.JournalPath = filepath.Join(opts.VaultRoot, opts.WorkDir, "journal.jsonl")
+	}
+	if opts.SecretResponse == "" {
+		opts.SecretResponse = policy.SecretBlock
+	}
+	pol := opts.Policy
+	if pol == nil {
+		def := policy.Default()
+		pol = &def
 	}
 	now := opts.Now
 	if now.IsZero() {
@@ -209,7 +232,7 @@ func Run(opts Options) (Summary, error) {
 			slog.Warn("apply: plan references unknown action id", "id", id)
 			continue
 		}
-		outcome := processOne(opts, rec, byPath, graph, trashRoot, now)
+		outcome := processOne(opts, pol, rec, byPath, graph, trashRoot, now)
 		switch outcome.Result {
 		case ResultApplied:
 			summary.Applied++
@@ -231,20 +254,48 @@ func Run(opts Options) (Summary, error) {
 
 // processOne decides and (optionally) executes one action; returns the
 // journal entry describing what happened.
-func processOne(opts Options, rec classify.Record, byPath map[string]scan.Entry, graph *links.Graph, trashRoot string, now time.Time) Entry {
+//
+// Flow:
+//  1. Look up the policy's action for this bucket.
+//  2. If the bucket is SECRETS and the action is mutating, consult
+//     SecretResponse: block (refuse), warn (log + proceed), silent
+//     (proceed quietly). Either way stamp SecretPattern on the entry.
+//  3. Refuse linked notes (until --rewrite-links lands).
+//  4. Dispatch on the action: drop (implemented), merge-frontmatter
+//     (not yet), review/keep/quarantine (no-ops).
+func processOne(opts Options, pol *policy.Policy, rec classify.Record, byPath map[string]scan.Entry, graph *links.Graph, trashRoot string, now time.Time) Entry {
 	id := plan.ItemIDFor(string(rec.Bucket), rec.Type, rec.Paths, rec.Path)
 	entry := Entry{ActionID: id, AppliedAt: now}
 
-	// SECRETS always refuse.
+	action := pol.ActionFor(rec.Bucket)
+	mutating := isMutatingAction(action)
+
+	// SECRETS handling. SecretPattern always stamped on the entry for
+	// audit, regardless of response mode or mutating-ness.
 	if rec.Bucket == classify.BucketSecrets {
-		entry.Result = ResultRefused
-		entry.Reason = ReasonSecretsBucket
-		entry.Path = primaryPath(rec)
-		return entry
+		entry.SecretPattern = rec.SecretPattern
+		if mutating {
+			switch opts.SecretResponse {
+			case policy.SecretBlock, "":
+				entry.Result = ResultRefused
+				entry.Reason = ReasonSecretsBucket
+				entry.Path = primaryPath(rec)
+				return entry
+			case policy.SecretWarn:
+				slog.Warn("apply: proceeding on SECRETS file",
+					"path", primaryPath(rec),
+					"pattern", rec.SecretPattern,
+					"action", action)
+			case policy.SecretSilent:
+				// Proceed without logging; journal still records SecretPattern.
+			}
+		}
 	}
 
-	// Linked-note refusal (until --rewrite-links lands).
-	if graph.Count(rec.Basename) > 0 {
+	// Linked-note refusal (until --rewrite-links lands) — only matters
+	// for mutating actions. A non-mutating action on a linked file is
+	// fine.
+	if mutating && graph.Count(rec.Basename) > 0 {
 		entry.Result = ResultRefused
 		entry.Reason = ReasonLinkedNote
 		entry.Path = primaryPath(rec)
@@ -252,9 +303,9 @@ func processOne(opts Options, rec classify.Record, byPath map[string]scan.Entry,
 		return entry
 	}
 
-	switch rec.Bucket {
-	case classify.BucketExact, classify.BucketCRLFOnly:
-		// drop the lexicographically-first path of the pair; keep the second.
+	// Dispatch on the policy-assigned action.
+	switch action {
+	case policy.ActionDrop:
 		if rec.Type != "pair" || len(rec.Paths) != 2 {
 			entry.Op = OpDrop
 			entry.Result = ResultSkipped
@@ -266,7 +317,7 @@ func processOne(opts Options, rec classify.Record, byPath map[string]scan.Entry,
 		entry.Path = target
 		return applyDrop(opts, entry, target, byPath, trashRoot, now)
 
-	case classify.BucketFrontmatterOnly:
+	case policy.ActionMergeFrontmatter:
 		entry.Op = OpMergeFrontmatter
 		entry.Result = ResultSkipped
 		entry.Reason = ReasonNotImplemented
@@ -275,11 +326,26 @@ func processOne(opts Options, rec classify.Record, byPath map[string]scan.Entry,
 		}
 		return entry
 
-	default:
-		// review / keep / quarantine / unknown — not executed by apply.
+	case policy.ActionReview, policy.ActionQuarantine, policy.ActionKeep:
 		entry.Result = ResultSkipped
 		entry.Reason = ReasonUnknownAction
 		return entry
+
+	default:
+		entry.Result = ResultSkipped
+		entry.Reason = ReasonUnknownAction
+		return entry
+	}
+}
+
+// isMutatingAction reports whether an action would mutate the vault.
+// Only mutating actions trigger safety refusals and SecretResponse mode.
+func isMutatingAction(a policy.Action) bool {
+	switch a {
+	case policy.ActionDrop, policy.ActionMergeFrontmatter:
+		return true
+	default:
+		return false
 	}
 }
 
