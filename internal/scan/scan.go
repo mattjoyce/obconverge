@@ -77,6 +77,10 @@ type Options struct {
 	// ProtectedPrefixes are additional vault-relative prefixes to skip, on top
 	// of DefaultProtectedPrefixes.
 	ProtectedPrefixes []string
+	// Detector scans note bodies for credential-shaped strings. Required —
+	// secret detection is part of the vault audit, not optional. Callers
+	// that don't care about user extensions can pass secrets.NewBuiltins().
+	Detector *secrets.Detector
 }
 
 // Run walks the vault and writes index.jsonl.
@@ -86,6 +90,9 @@ func Run(opts Options) error {
 	}
 	if opts.OutputPath == "" {
 		return fmt.Errorf("scan: OutputPath is required")
+	}
+	if opts.Detector == nil {
+		return fmt.Errorf("scan: Detector is required")
 	}
 
 	prefixes := append([]string(nil), DefaultProtectedPrefixes...)
@@ -129,7 +136,7 @@ func Run(opts Options) error {
 			return nil
 		}
 
-		entry, err := analyze(path, relSlash, info)
+		entry, err := analyze(path, relSlash, info, opts.Detector)
 		if err != nil {
 			return err
 		}
@@ -153,7 +160,7 @@ func isProtected(relSlash string, prefixes []string) bool {
 }
 
 // analyze reads a single file and computes all its signals.
-func analyze(path, relSlash string, info os.FileInfo) (Entry, error) {
+func analyze(path, relSlash string, info os.FileInfo, detector *secrets.Detector) (Entry, error) {
 	b, err := os.ReadFile(path)
 	if err != nil {
 		return Entry{}, err
@@ -181,7 +188,7 @@ func analyze(path, relSlash string, info os.FileInfo) (Entry, error) {
 				entry.Aliases = fields.Aliases
 			}
 		}
-		if matched, name := secrets.Detect(b); matched {
+		if matched, name := detector.Detect(b); matched {
 			entry.HasSecrets = true
 			entry.SecretPattern = name
 		}

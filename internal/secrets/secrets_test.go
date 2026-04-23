@@ -32,8 +32,7 @@ var positiveFixtures = []struct {
 		pattern: "aws-access-key",
 	},
 	{
-		name: "google",
-		// Google API keys are AIza + 35 chars, 39 total.
+		name:    "google",
 		content: "export GOOGLE_API_KEY=AIzaSyDxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
 		pattern: "google-api",
 	},
@@ -53,7 +52,9 @@ var positiveFixtures = []struct {
 		pattern: "jwt",
 	},
 	{
-		name:    "slack",
+		name: "slack",
+		// Deliberately non-token-shaped: matches our regex but not GitHub's
+		// Slack-token secret scanner (which expects xoxb-<int>-<int>-<alnum>).
 		content: "token: xoxb-TESTFIXTURE-NOTAREALSLACKTOKEN",
 		pattern: "slack",
 	},
@@ -65,9 +66,10 @@ var positiveFixtures = []struct {
 }
 
 func TestDetect_MatchesPositiveFixtures(t *testing.T) {
+	d := NewBuiltins()
 	for _, tc := range positiveFixtures {
 		t.Run(tc.name, func(t *testing.T) {
-			got, name := Detect([]byte(tc.content))
+			got, name := d.Detect([]byte(tc.content))
 			if !got {
 				t.Errorf("Detect returned false for %s fixture\ncontent: %s", tc.name, tc.content)
 			}
@@ -79,15 +81,16 @@ func TestDetect_MatchesPositiveFixtures(t *testing.T) {
 }
 
 func TestDetect_NegativeFixtures(t *testing.T) {
+	d := NewBuiltins()
 	negatives := []string{
 		"just some plain markdown\nnothing interesting",
 		"# A note\n\n- thought 1\n- thought 2\n",
-		"random short string sk-abc",             // too short to match openai
-		"mentions sk and sk-ant in prose only",   // not credential-shaped
-		"url: https://github.com/owner/repo.git", // contains github but not a token
+		"random short string sk-abc",
+		"mentions sk and sk-ant in prose only",
+		"url: https://github.com/owner/repo.git",
 	}
 	for i, content := range negatives {
-		if got, _ := Detect([]byte(content)); got {
+		if got, _ := d.Detect([]byte(content)); got {
 			t.Errorf("negatives[%d] unexpectedly matched: %q", i, content)
 		}
 	}
@@ -96,34 +99,34 @@ func TestDetect_NegativeFixtures(t *testing.T) {
 func TestDetect_ReturnsFirstPatternName(t *testing.T) {
 	// Anthropic pattern should win over OpenAI when the content matches both
 	// (anthropic has sk-ant- prefix that would otherwise match openai's sk-).
+	d := NewBuiltins()
 	content := "token: sk-ant-api03-abcDEF_1234567890xyzXYZ0987654321fakefakefake"
-	_, name := Detect([]byte(content))
+	_, name := d.Detect([]byte(content))
 	if name != "anthropic" {
 		t.Errorf("pattern = %q, want anthropic (it is ordered first)", name)
 	}
 }
 
 func TestContains_Convenience(t *testing.T) {
-	if !Contains([]byte("key=AKIAIOSFODNN7EXAMPLE")) {
+	d := NewBuiltins()
+	if !d.Contains([]byte("key=AKIAIOSFODNN7EXAMPLE")) {
 		t.Error("Contains should match the AWS fixture")
 	}
-	if Contains([]byte("plain text only")) {
+	if d.Contains([]byte("plain text only")) {
 		t.Error("Contains should not match plain text")
 	}
 }
 
-// TestNoContentLeakage guards the spec's core invariant for this package:
-// the matched credential must never appear in the returned value. Detect
-// returns only a bool and a pattern name — content is never in scope.
-func TestNoContentLeakage(t *testing.T) {
+func TestDetect_NoContentLeakage(t *testing.T) {
+	d := NewBuiltins()
 	secret := "sk-ant-api03-abcDEF_1234567890xyzXYZ0987654321fakefakefake"
-	_, name := Detect([]byte("some prose " + secret + " more prose"))
+	_, name := d.Detect([]byte("some prose " + secret + " more prose"))
 	if strings.Contains(name, secret) {
 		t.Error("pattern name leaked secret content")
 	}
 }
 
-func TestBuiltinNames_MatchesShippedPatterns(t *testing.T) {
+func TestBuiltins_MatchesShippedNames(t *testing.T) {
 	want := []string{
 		"anthropic", "openai", "aws-access-key", "google-api",
 		"github-pat", "github-fine", "jwt", "slack", "pem",
@@ -143,48 +146,93 @@ func TestBuiltinNames_MatchesShippedPatterns(t *testing.T) {
 	}
 }
 
-func TestLoadUserExtensions_AddsNewPattern(t *testing.T) {
-	t.Cleanup(Reset)
-
+func TestParseFile_ReadsUserExtension(t *testing.T) {
 	path := writeJSON(t, t.TempDir(), `{
 		"patterns": [
 			{"name": "corp-token", "regex": "CORP-[A-Z0-9]{16}", "description": "Internal corp tokens"}
 		]
 	}`)
-
-	if err := LoadUserExtensions(path); err != nil {
-		t.Fatalf("LoadUserExtensions: %v", err)
+	got, err := ParseFile(path)
+	if err != nil {
+		t.Fatalf("ParseFile: %v", err)
 	}
-	if !Contains([]byte("AKIAIOSFODNN7EXAMPLE")) {
-		t.Error("built-in aws pattern no longer detects after user extension loaded")
-	}
-	matched, name := Detect([]byte("key: CORP-ABC123XYZ9876QRST"))
-	if !matched {
-		t.Error("user extension pattern should match its fixture")
-	}
-	if name != "corp-token" {
-		t.Errorf("name = %q, want corp-token", name)
+	if len(got) != 1 || got[0].Name != "corp-token" {
+		t.Errorf("unexpected patterns: %+v", got)
 	}
 }
 
-func TestLoadUserExtensions_MissingFileIsNoOp(t *testing.T) {
-	t.Cleanup(Reset)
-	if err := LoadUserExtensions(filepath.Join(t.TempDir(), "does-not-exist.json")); err != nil {
+func TestParseFile_MissingReturnsNilNoError(t *testing.T) {
+	got, err := ParseFile(filepath.Join(t.TempDir(), "does-not-exist.json"))
+	if err != nil {
 		t.Errorf("missing file should not error, got %v", err)
 	}
-	if !Contains([]byte("AKIAIOSFODNN7EXAMPLE")) {
-		t.Error("built-ins broken after no-op extension load")
+	if got != nil {
+		t.Errorf("missing file should return nil, got %+v", got)
 	}
 }
 
-func TestLoadUserExtensions_DuplicateNameIsError(t *testing.T) {
-	t.Cleanup(Reset)
+func TestParseFile_EmptyPathReturnsNilNoError(t *testing.T) {
+	got, err := ParseFile("")
+	if err != nil {
+		t.Errorf("empty path should not error, got %v", err)
+	}
+	if got != nil {
+		t.Errorf("empty path should return nil, got %+v", got)
+	}
+}
+
+func TestParseFile_InvalidRegexIsError(t *testing.T) {
 	path := writeJSON(t, t.TempDir(), `{
 		"patterns": [
-			{"name": "openai", "regex": "anything", "description": "tries to shadow built-in"}
+			{"name": "bad", "regex": "(unclosed", "description": "bad regex"}
 		]
 	}`)
-	err := LoadUserExtensions(path)
+	if _, err := ParseFile(path); err == nil {
+		t.Fatal("expected error for invalid regex")
+	}
+}
+
+func TestCombine_AppendsAndPreservesBase(t *testing.T) {
+	base, err := Builtins()
+	if err != nil {
+		t.Fatalf("Builtins: %v", err)
+	}
+	extra, err := ParseFile(writeJSON(t, t.TempDir(), `{
+		"patterns": [
+			{"name": "corp-token", "regex": "CORP-[A-Z0-9]{16}"}
+		]
+	}`))
+	if err != nil {
+		t.Fatalf("ParseFile: %v", err)
+	}
+
+	merged, err := Combine(base, extra)
+	if err != nil {
+		t.Fatalf("Combine: %v", err)
+	}
+	if len(merged) != len(base)+1 {
+		t.Errorf("merged len = %d, want %d", len(merged), len(base)+1)
+	}
+
+	d := New(merged)
+	// Built-in still fires.
+	if !d.Contains([]byte("AKIAIOSFODNN7EXAMPLE")) {
+		t.Error("built-in aws pattern missing from combined detector")
+	}
+	// User extension fires.
+	matched, name := d.Detect([]byte("key: CORP-ABC123XYZ9876QRST"))
+	if !matched || name != "corp-token" {
+		t.Errorf("corp-token not detected: matched=%v name=%q", matched, name)
+	}
+}
+
+func TestCombine_UserNameCollidingWithBuiltinIsError(t *testing.T) {
+	base, err := Builtins()
+	if err != nil {
+		t.Fatalf("Builtins: %v", err)
+	}
+	extra := []Pattern{{Name: "openai", Description: "shadow attempt"}}
+	_, err = Combine(base, extra)
 	if err == nil {
 		t.Fatal("expected error for name collision with built-in")
 	}
@@ -193,44 +241,13 @@ func TestLoadUserExtensions_DuplicateNameIsError(t *testing.T) {
 	}
 }
 
-func TestLoadUserExtensions_InvalidRegexIsError(t *testing.T) {
-	t.Cleanup(Reset)
-	path := writeJSON(t, t.TempDir(), `{
-		"patterns": [
-			{"name": "bad", "regex": "(unclosed", "description": "bad regex"}
-		]
-	}`)
-	if err := LoadUserExtensions(path); err == nil {
-		t.Fatal("expected error for invalid regex")
+func TestCombine_DuplicateWithinExtraIsError(t *testing.T) {
+	extra := []Pattern{
+		{Name: "corp-token"},
+		{Name: "corp-token"},
 	}
-}
-
-func TestLoadUserExtensions_EmptyPathIsNoOp(t *testing.T) {
-	t.Cleanup(Reset)
-	if err := LoadUserExtensions(""); err != nil {
-		t.Errorf("empty path should not error, got %v", err)
-	}
-}
-
-func TestReset_DiscardsUserExtensions(t *testing.T) {
-	t.Cleanup(Reset)
-	path := writeJSON(t, t.TempDir(), `{
-		"patterns": [
-			{"name": "one-shot", "regex": "ONESHOT-[A-Z]+", "description": "ephemeral"}
-		]
-	}`)
-	if err := LoadUserExtensions(path); err != nil {
-		t.Fatalf("LoadUserExtensions: %v", err)
-	}
-	if !Contains([]byte("ONESHOT-ABC")) {
-		t.Fatal("extension didn't load in the first place")
-	}
-	Reset()
-	if Contains([]byte("ONESHOT-ABC")) {
-		t.Error("Reset should discard user extensions")
-	}
-	if !Contains([]byte("AKIAIOSFODNN7EXAMPLE")) {
-		t.Error("Reset clobbered built-ins")
+	if _, err := Combine(nil, extra); err == nil {
+		t.Fatal("expected error for duplicate name within extras")
 	}
 }
 
@@ -241,6 +258,24 @@ func TestDefaultUserExtensionPath(t *testing.T) {
 	}
 	if !strings.HasSuffix(got, "/.config/obconverge/secret_patterns.json") {
 		t.Errorf("path = %q, want suffix /.config/obconverge/secret_patterns.json", got)
+	}
+}
+
+// TestNew_DefensiveCopy verifies mutating the caller's slice after
+// construction doesn't corrupt the detector.
+func TestNew_DefensiveCopy(t *testing.T) {
+	built, err := Builtins()
+	if err != nil {
+		t.Fatalf("Builtins: %v", err)
+	}
+	d := New(built)
+	// Mutate the caller's slice — clobber every pattern.
+	for i := range built {
+		built[i] = Pattern{}
+	}
+	// Detector must still work.
+	if !d.Contains([]byte("AKIAIOSFODNN7EXAMPLE")) {
+		t.Error("detector was affected by caller's slice mutation")
 	}
 }
 

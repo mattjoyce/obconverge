@@ -29,7 +29,10 @@ var version = "dev"
 // ctxKey is unexported so no other package can read our context values.
 type ctxKey string
 
-const cfgKey ctxKey = "obconverge-config"
+const (
+	cfgKey      ctxKey = "obconverge-config"
+	detectorKey ctxKey = "obconverge-detector"
+)
 
 func main() {
 	if err := newRoot().Execute(); err != nil {
@@ -83,15 +86,28 @@ func newRoot() *cobra.Command {
 			}
 			slog.SetDefault(logging.New(logging.Options{Level: level, Format: format}))
 
-			// Load user extensions to the secret detector, if any. Missing
-			// file is fine; collisions with built-in names are a hard error.
+			// Build the secret detector from built-ins plus any user
+			// extensions. Missing extension file is fine; collisions are
+			// a hard error.
+			base, err := secrets.Builtins()
+			if err != nil {
+				return fmt.Errorf("%w: built-in patterns: %v", errcode.ErrValidation, err)
+			}
 			extPath, _ := secrets.DefaultUserExtensionPath()
-			if err := secrets.LoadUserExtensions(extPath); err != nil {
+			extra, err := secrets.ParseFile(extPath)
+			if err != nil {
 				return fmt.Errorf("%w: %v", errcode.ErrValidation, err)
 			}
+			merged, err := secrets.Combine(base, extra)
+			if err != nil {
+				return fmt.Errorf("%w: %v", errcode.ErrValidation, err)
+			}
+			detector := secrets.New(merged)
 
-			// Make config available to subcommands via context.
-			cmd.SetContext(context.WithValue(cmd.Context(), cfgKey, cfg))
+			// Stash config and detector in context for subcommands.
+			ctx := context.WithValue(cmd.Context(), cfgKey, cfg)
+			ctx = context.WithValue(ctx, detectorKey, detector)
+			cmd.SetContext(ctx)
 			return nil
 		},
 		RunE: func(cmd *cobra.Command, args []string) error {
@@ -131,6 +147,7 @@ func newScanCmd() *cobra.Command {
 		Long:  "scan walks the vault (respecting protected paths) and writes an index.jsonl artifact with hashes and metadata for each regular file.",
 		RunE: func(cmd *cobra.Command, args []string) error {
 			cfg := cfgFromCtx(cmd.Context())
+			det := detectorFromCtx(cmd.Context())
 			root, err := resolveVault(vaultFlag, cfg.VaultPath)
 			if err != nil {
 				return err
@@ -140,7 +157,7 @@ func newScanCmd() *cobra.Command {
 				return err
 			}
 			slog.Debug("scan starting", "vault", root, "output", out)
-			if err := scan.Run(scan.Options{VaultRoot: root, OutputPath: out}); err != nil {
+			if err := scan.Run(scan.Options{VaultRoot: root, OutputPath: out, Detector: det}); err != nil {
 				return err
 			}
 			slog.Info("scan complete", "output", out)
@@ -243,6 +260,16 @@ func cfgFromCtx(ctx context.Context) config.Config {
 		return v
 	}
 	return config.Default()
+}
+
+// detectorFromCtx retrieves the secret detector PersistentPreRunE built.
+// If it's missing (should never happen in production), returns a built-ins
+// detector — defensive but never silently drops protection.
+func detectorFromCtx(ctx context.Context) *secrets.Detector {
+	if v, ok := ctx.Value(detectorKey).(*secrets.Detector); ok {
+		return v
+	}
+	return secrets.NewBuiltins()
 }
 
 // resolveVault picks the vault root: CLI flag wins over config.VaultPath.

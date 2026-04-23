@@ -1,14 +1,14 @@
 // Package secrets detects credential-shaped strings in note content.
 //
-// Patterns live in patterns.json (embedded at build time). Operators may
-// ADD patterns at runtime via ~/.config/obconverge/secret_patterns.json;
-// they cannot REMOVE or SHADOW built-ins. This is a security tool — the
-// shipped patterns are non-negotiable.
+// Patterns are values, and a Detector is a value built from a list of them.
+// The package has no state: callers build a Detector once (typically in
+// main after reading the embed and any user extensions) and pass it to
+// whatever phase needs secret detection.
 //
-// The detector is intentionally pattern-based and conservative. False
-// positives are cheap (a file routes into the SECRETS bucket and the
-// operator reviews it in Obsidian); false negatives leak credentials into
-// terminal scrollback and plan files. Err toward over-matching.
+// Patterns ship in patterns.json (embedded at build time). Operators may
+// ADD patterns via ~/.config/obconverge/secret_patterns.json; they cannot
+// REMOVE or SHADOW built-ins. This is a security tool — the shipped
+// patterns are non-negotiable.
 //
 // Per SPEC.md "Secret protection": a file in the SECRETS bucket must NEVER
 // have its content printed to stdout, stderr, log, or plan. The API here
@@ -24,7 +24,6 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
-	"sync"
 )
 
 //go:embed patterns.json
@@ -47,38 +46,21 @@ type patternSpec struct {
 	Description string `json:"description,omitempty"`
 }
 
-var (
-	mu       sync.RWMutex
-	patterns []Pattern // mutated only via Reset / LoadUserExtensions
-)
-
-func init() {
-	built, err := parseSpecs(builtinPatternsJSON)
-	if err != nil {
-		// A broken built-in file is a build-time failure, not a runtime
-		// one — but go:embed happened at build time, so this can only
-		// fire if the file was hand-edited into invalid JSON.
-		panic(fmt.Sprintf("secrets: built-in patterns.json invalid: %v", err))
-	}
-	patterns = built
+// Builtins returns the shipped pattern set, freshly parsed from the
+// embedded JSON. It is a pure function of the embed.
+func Builtins() ([]Pattern, error) {
+	return parseSpecs(builtinPatternsJSON)
 }
 
-// Reset reloads only the built-in patterns, discarding any user extensions.
-// Intended for tests; safe in production too.
-func Reset() {
-	built, err := parseSpecs(builtinPatternsJSON)
-	if err != nil {
-		panic(fmt.Sprintf("secrets: built-in patterns.json invalid: %v", err))
-	}
-	mu.Lock()
-	patterns = built
-	mu.Unlock()
-}
-
-// BuiltinNames returns the names of the shipped built-in patterns. Used for
-// drift-testing the skills descriptor against this package.
+// BuiltinNames returns just the names from Builtins(). Convenience for
+// drift-testing against the skills descriptor.
 func BuiltinNames() []string {
-	built, _ := parseSpecs(builtinPatternsJSON)
+	built, err := Builtins()
+	if err != nil {
+		// The embed is bundled with the binary; a failure here means the
+		// binary was built from a bad source tree.
+		panic(fmt.Sprintf("secrets: built-in patterns invalid: %v", err))
+	}
 	out := make([]string, 0, len(built))
 	for _, p := range built {
 		out = append(out, p.Name)
@@ -86,8 +68,51 @@ func BuiltinNames() []string {
 	return out
 }
 
-// DefaultUserExtensionPath returns the standard location obconverge checks
-// for user-defined extra patterns: ~/.config/obconverge/secret_patterns.json.
+// ParseFile reads a user-supplied patterns file and returns the parsed,
+// compiled list. A missing file returns (nil, nil); the caller decides
+// whether that's OK for their use case.
+func ParseFile(path string) ([]Pattern, error) {
+	if path == "" {
+		return nil, nil
+	}
+	data, err := os.ReadFile(path)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("secrets: read %s: %w", path, err)
+	}
+	patterns, err := parseSpecs(data)
+	if err != nil {
+		return nil, fmt.Errorf("secrets: parse %s: %w", path, err)
+	}
+	return patterns, nil
+}
+
+// Combine merges base and extra into a single pattern list. Any name
+// collision (between base and extra, or within extra) is a hard error:
+// users add, never shadow. This is the "additive, no-shadow" policy.
+func Combine(base, extra []Pattern) ([]Pattern, error) {
+	seen := make(map[string]bool, len(base)+len(extra))
+	out := make([]Pattern, 0, len(base)+len(extra))
+	for _, p := range base {
+		if seen[p.Name] {
+			return nil, fmt.Errorf("secrets: duplicate name %q in base patterns", p.Name)
+		}
+		seen[p.Name] = true
+		out = append(out, p)
+	}
+	for _, p := range extra {
+		if seen[p.Name] {
+			return nil, fmt.Errorf("secrets: user pattern %q collides with an existing name", p.Name)
+		}
+		seen[p.Name] = true
+		out = append(out, p)
+	}
+	return out, nil
+}
+
+// DefaultUserExtensionPath returns ~/.config/obconverge/secret_patterns.json.
 func DefaultUserExtensionPath() (string, error) {
 	home, err := os.UserHomeDir()
 	if err != nil {
@@ -96,50 +121,38 @@ func DefaultUserExtensionPath() (string, error) {
 	return filepath.Join(home, ".config", "obconverge", "secret_patterns.json"), nil
 }
 
-// LoadUserExtensions reads an optional patterns JSON file and appends any
-// new patterns to the global list. A missing file is not an error. A
-// pattern whose name collides with a built-in (or another user pattern)
-// is a hard error — users add, never shadow.
-func LoadUserExtensions(path string) error {
-	if path == "" {
-		return nil
-	}
-	data, err := os.ReadFile(path)
-	if errors.Is(err, os.ErrNotExist) {
-		return nil
-	}
-	if err != nil {
-		return fmt.Errorf("secrets: read %s: %w", path, err)
-	}
-	extra, err := parseSpecs(data)
-	if err != nil {
-		return fmt.Errorf("secrets: parse %s: %w", path, err)
-	}
+// Detector is an immutable value that matches content against a fixed set
+// of patterns. Build one with New; share freely across goroutines.
+type Detector struct {
+	patterns []Pattern
+}
 
-	mu.Lock()
-	defer mu.Unlock()
-	existing := map[string]bool{}
-	for _, p := range patterns {
-		existing[p.Name] = true
+// New constructs a Detector over the given patterns. The caller is
+// responsible for having run Combine (or equivalent) beforehand.
+func New(patterns []Pattern) *Detector {
+	// Defensive copy so the caller's slice can't be mutated through the
+	// returned detector's view.
+	p := make([]Pattern, len(patterns))
+	copy(p, patterns)
+	return &Detector{patterns: p}
+}
+
+// NewBuiltins is a convenience that returns a Detector configured with
+// only the shipped built-in patterns. Useful for tests and for callers
+// that don't need user extensions.
+func NewBuiltins() *Detector {
+	built, err := Builtins()
+	if err != nil {
+		panic(fmt.Sprintf("secrets: built-in patterns invalid: %v", err))
 	}
-	for _, p := range extra {
-		if existing[p.Name] {
-			return fmt.Errorf("secrets: user pattern %q collides with existing name (file: %s)", p.Name, path)
-		}
-		existing[p.Name] = true
-	}
-	patterns = append(patterns, extra...)
-	return nil
+	return New(built)
 }
 
 // Detect scans content and returns (matched, patternName). patternName is
 // the name of the first matching pattern; the content itself is never
 // returned.
-func Detect(content []byte) (bool, string) {
-	mu.RLock()
-	list := patterns
-	mu.RUnlock()
-	for _, p := range list {
+func (d *Detector) Detect(content []byte) (bool, string) {
+	for _, p := range d.patterns {
 		if p.Regex.Match(content) {
 			return true, p.Name
 		}
@@ -148,9 +161,16 @@ func Detect(content []byte) (bool, string) {
 }
 
 // Contains is a convenience predicate for callers that only need the verdict.
-func Contains(content []byte) bool {
-	matched, _ := Detect(content)
+func (d *Detector) Contains(content []byte) bool {
+	matched, _ := d.Detect(content)
 	return matched
+}
+
+// Patterns returns a copy of the patterns this detector was built with.
+func (d *Detector) Patterns() []Pattern {
+	out := make([]Pattern, len(d.patterns))
+	copy(out, d.patterns)
+	return out
 }
 
 func parseSpecs(data []byte) ([]Pattern, error) {

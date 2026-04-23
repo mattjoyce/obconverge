@@ -11,6 +11,7 @@ import (
 	"github.com/mattjoyce/obconverge/internal/artifact"
 	"github.com/mattjoyce/obconverge/internal/classify"
 	"github.com/mattjoyce/obconverge/internal/scan"
+	"github.com/mattjoyce/obconverge/internal/secrets"
 	"github.com/mattjoyce/obconverge/internal/testvault"
 )
 
@@ -123,7 +124,7 @@ func TestClassify_SecretsNeverLeakContent(t *testing.T) {
 	indexPath := filepath.Join(dir, "index.jsonl")
 	classPath := filepath.Join(dir, "classification.jsonl")
 
-	if err := scan.Run(scan.Options{VaultRoot: root, OutputPath: indexPath}); err != nil {
+	if err := scan.Run(scan.Options{VaultRoot: root, OutputPath: indexPath, Detector: secrets.NewBuiltins()}); err != nil {
 		t.Fatalf("scan.Run: %v", err)
 	}
 	if err := classify.Run(classify.Options{IndexPath: indexPath, ClassificationPath: classPath}); err != nil {
@@ -208,7 +209,7 @@ func scanAndClassify(t *testing.T, vaultRoot string) []classify.Record {
 	indexPath := filepath.Join(dir, "index.jsonl")
 	classPath := filepath.Join(dir, "classification.jsonl")
 
-	if err := scan.Run(scan.Options{VaultRoot: vaultRoot, OutputPath: indexPath}); err != nil {
+	if err := scan.Run(scan.Options{VaultRoot: vaultRoot, OutputPath: indexPath, Detector: secrets.NewBuiltins()}); err != nil {
 		t.Fatalf("scan.Run: %v", err)
 	}
 	if err := classify.Run(classify.Options{IndexPath: indexPath, ClassificationPath: classPath}); err != nil {

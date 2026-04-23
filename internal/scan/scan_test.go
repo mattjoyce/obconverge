@@ -9,6 +9,7 @@ import (
 
 	"github.com/mattjoyce/obconverge/internal/artifact"
 	"github.com/mattjoyce/obconverge/internal/scan"
+	"github.com/mattjoyce/obconverge/internal/secrets"
 	"github.com/mattjoyce/obconverge/internal/testvault"
 )
 
@@ -20,7 +21,7 @@ func TestRun_IndexesRegularFiles(t *testing.T) {
 	)
 	out := filepath.Join(t.TempDir(), "index.jsonl")
 
-	if err := scan.Run(scan.Options{VaultRoot: root, OutputPath: out}); err != nil {
+	if err := scan.Run(scan.Options{VaultRoot: root, OutputPath: out, Detector: secrets.NewBuiltins()}); err != nil {
 		t.Fatalf("scan.Run: %v", err)
 	}
 
@@ -61,7 +62,7 @@ func TestRun_SkipsProtectedDirs(t *testing.T) {
 		testvault.File{Path: ".obconverge/stale.jsonl", Content: `{"stale":true}` + "\n"},
 	)
 	out := filepath.Join(t.TempDir(), "index.jsonl")
-	if err := scan.Run(scan.Options{VaultRoot: root, OutputPath: out}); err != nil {
+	if err := scan.Run(scan.Options{VaultRoot: root, OutputPath: out, Detector: secrets.NewBuiltins()}); err != nil {
 		t.Fatalf("scan.Run: %v", err)
 	}
 
@@ -77,7 +78,7 @@ func TestRun_CRLFAndLFShareContentHashNotByteHash(t *testing.T) {
 		testvault.File{Path: "crlf.md", Content: "line one\r\nline two\r\n"},
 	)
 	out := filepath.Join(t.TempDir(), "index.jsonl")
-	if err := scan.Run(scan.Options{VaultRoot: root, OutputPath: out}); err != nil {
+	if err := scan.Run(scan.Options{VaultRoot: root, OutputPath: out, Detector: secrets.NewBuiltins()}); err != nil {
 		t.Fatalf("scan.Run: %v", err)
 	}
 
@@ -101,7 +102,7 @@ func TestRun_FrontmatterExtraction(t *testing.T) {
 		testvault.File{Path: "Plain.md", Content: "# just a body\n"},
 	)
 	out := filepath.Join(t.TempDir(), "index.jsonl")
-	if err := scan.Run(scan.Options{VaultRoot: root, OutputPath: out}); err != nil {
+	if err := scan.Run(scan.Options{VaultRoot: root, OutputPath: out, Detector: secrets.NewBuiltins()}); err != nil {
 		t.Fatalf("scan.Run: %v", err)
 	}
 
@@ -146,7 +147,7 @@ func TestRun_DetectsSecrets(t *testing.T) {
 		testvault.File{Path: "Clean.md", Content: "Just a normal note.\n"},
 	)
 	out := filepath.Join(t.TempDir(), "index.jsonl")
-	if err := scan.Run(scan.Options{VaultRoot: root, OutputPath: out}); err != nil {
+	if err := scan.Run(scan.Options{VaultRoot: root, OutputPath: out, Detector: secrets.NewBuiltins()}); err != nil {
 		t.Fatalf("scan.Run: %v", err)
 	}
 
@@ -174,7 +175,7 @@ func TestRun_BodyHashMatchesAcrossFrontmatterDifferences(t *testing.T) {
 		testvault.File{Path: "b.md", Content: "---\ntags: [two]\n---\n\nshared body\n"},
 	)
 	out := filepath.Join(t.TempDir(), "index.jsonl")
-	if err := scan.Run(scan.Options{VaultRoot: root, OutputPath: out}); err != nil {
+	if err := scan.Run(scan.Options{VaultRoot: root, OutputPath: out, Detector: secrets.NewBuiltins()}); err != nil {
 		t.Fatalf("scan.Run: %v", err)
 	}
 	entries := readAllEntries(t, out)
@@ -198,7 +199,7 @@ func TestRun_DoesNotMutateVault(t *testing.T) {
 	before := snapshotVault(t, root)
 
 	out := filepath.Join(t.TempDir(), "index.jsonl")
-	if err := scan.Run(scan.Options{VaultRoot: root, OutputPath: out}); err != nil {
+	if err := scan.Run(scan.Options{VaultRoot: root, OutputPath: out, Detector: secrets.NewBuiltins()}); err != nil {
 		t.Fatalf("scan.Run: %v", err)
 	}
 

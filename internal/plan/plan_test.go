@@ -11,6 +11,7 @@ import (
 	"github.com/mattjoyce/obconverge/internal/classify"
 	"github.com/mattjoyce/obconverge/internal/plan"
 	"github.com/mattjoyce/obconverge/internal/scan"
+	"github.com/mattjoyce/obconverge/internal/secrets"
 	"github.com/mattjoyce/obconverge/internal/testvault"
 )
 
@@ -31,7 +32,7 @@ func runPipeline(t *testing.T, files []testvault.File, policyYAML string) (strin
 		}
 	}
 
-	if err := scan.Run(scan.Options{VaultRoot: root, OutputPath: indexPath}); err != nil {
+	if err := scan.Run(scan.Options{VaultRoot: root, OutputPath: indexPath, Detector: secrets.NewBuiltins()}); err != nil {
 		t.Fatalf("scan.Run: %v", err)
 	}
 	if err := classify.Run(classify.Options{IndexPath: indexPath, ClassificationPath: classPath}); err != nil {
@@ -152,7 +153,7 @@ func TestPlan_PreservesCheckStateOnRerun(t *testing.T) {
 	classPath := filepath.Join(work, "classification.jsonl")
 	planPath := filepath.Join(work, "plan.md")
 
-	if err := scan.Run(scan.Options{VaultRoot: root, OutputPath: indexPath}); err != nil {
+	if err := scan.Run(scan.Options{VaultRoot: root, OutputPath: indexPath, Detector: secrets.NewBuiltins()}); err != nil {
 		t.Fatalf("scan: %v", err)
 	}
 	if err := classify.Run(classify.Options{IndexPath: indexPath, ClassificationPath: classPath}); err != nil {
