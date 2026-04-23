@@ -176,10 +176,11 @@ var bucketOrder = map[classify.Bucket]int{
 	classify.BucketSecrets:          0,
 	classify.BucketExact:            1,
 	classify.BucketCRLFOnly:         2,
-	classify.BucketFrontmatterOnly:  3,
-	classify.BucketFrontmatterEqual: 4,
-	classify.BucketDiverged:         5,
-	classify.BucketUnique:           6,
+	classify.BucketTagDelta:         3,
+	classify.BucketFrontmatterOnly:  4,
+	classify.BucketFrontmatterEqual: 5,
+	classify.BucketDiverged:         6,
+	classify.BucketUnique:           7,
 }
 
 func sortItems(items []Item) {
@@ -324,6 +325,8 @@ func baseDescription(it Item) string {
 		return "Byte-identical duplicates."
 	case classify.BucketCRLFOnly:
 		return "Differ only in line endings (CRLF vs LF)."
+	case classify.BucketTagDelta:
+		return "Bodies identical; frontmatter differs only in the tags list."
 	case classify.BucketFrontmatterOnly:
 		return "Bodies identical; frontmatter differs."
 	case classify.BucketFrontmatterEqual:

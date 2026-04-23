@@ -41,15 +41,29 @@ func TestClassify_CRLFOnlyDifference(t *testing.T) {
 	}
 }
 
-func TestClassify_FrontmatterOnly_SameBodyDifferentTags(t *testing.T) {
+func TestClassify_TagDelta_OnlyTagsDiffer(t *testing.T) {
 	root := testvault.Build(t,
-		testvault.File{Path: "Notes/Delta.md", Content: "---\ntags: [a]\n---\n\nshared body\n"},
-		testvault.File{Path: "Prod/Delta.md", Content: "---\ntags: [b]\n---\n\nshared body\n"},
+		testvault.File{Path: "Notes/Delta.md", Content: "---\ntitle: Same\ntags:\n  - a\n---\n\nshared body\n"},
+		testvault.File{Path: "Prod/Delta.md", Content: "---\ntitle: Same\ntags:\n  - b\n---\n\nshared body\n"},
 	)
 	records := scanAndClassify(t, root)
 	pair := findPair(t, records, "Delta.md")
+	if pair.Bucket != classify.BucketTagDelta {
+		t.Errorf("bucket = %s, want TAG-DELTA (only tags differ)", pair.Bucket)
+	}
+}
+
+func TestClassify_FrontmatterOnly_WhenNonTagKeyDiffers(t *testing.T) {
+	// Both have tags (different AND title key differs) -> FRONTMATTER-ONLY,
+	// not TAG-DELTA, because the difference isn't tags-only.
+	root := testvault.Build(t,
+		testvault.File{Path: "Notes/Eps.md", Content: "---\ntitle: One\ntags:\n  - a\n---\n\nshared body\n"},
+		testvault.File{Path: "Prod/Eps.md", Content: "---\ntitle: Two\ntags:\n  - b\n---\n\nshared body\n"},
+	)
+	records := scanAndClassify(t, root)
+	pair := findPair(t, records, "Eps.md")
 	if pair.Bucket != classify.BucketFrontmatterOnly {
-		t.Errorf("bucket = %s, want FRONTMATTER-ONLY", pair.Bucket)
+		t.Errorf("bucket = %s, want FRONTMATTER-ONLY (title also differs)", pair.Bucket)
 	}
 }
 

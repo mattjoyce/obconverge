@@ -171,7 +171,9 @@ Agent-friendly behaviors:
 - [x] `undo` — journal reversal: restore drops from trash and revert merge-frontmatter rewrites using the winner's pre-merge backup. Refuses to overwrite files the operator has edited post-apply.
 - [x] `purge` — remove `.obconverge/trash/` entirely; marks the boundary beyond which undo cannot recover ("reversible until --purge").
 - [x] Import-graph purity invariant test — `internal/invariants/purity_test.go` asserts scan/classify/plan/etc. never transitively import apply or undo.
-- [ ] `--rewrite-links` — relax the linked-note refusal (correct: pair-drops are already link-safe because basename resolution preserves referrers; only unique-drops break links)
-- [ ] TAG-DELTA / APPEND-ONLY — classifier polish
+- [x] Tightened linked-note refusal — pair drops now proceed (basename preserved by survivor); only unique-drops of linked files refuse
+- [x] TAG-DELTA bucket — pairs whose frontmatter differs only in `tags`; same `merge-frontmatter` action as FRONTMATTER-ONLY but named precisely
+- [ ] `--rewrite-links` — edit referrers when dropping a linked unique
+- [ ] APPEND-ONLY — detect when one file is a byte-prefix of the other (requires classify-time file reads)
 - [ ] `TAG-DELTA` / `APPEND-ONLY` buckets
 - [ ] Import-graph purity invariant test

@@ -20,9 +20,10 @@ import (
 	"github.com/mattjoyce/obconverge/internal/secrets"
 )
 
-// Schema is the header schema string for index.jsonl artifacts. Bumped to v2
-// with the addition of frontmatter/body hashes and the secrets flag.
-const Schema = "index/2"
+// Schema is the header schema string for index.jsonl artifacts. Bumped to v3
+// with the addition of FrontmatterNoTagsHash (used by classify to detect
+// TAG-DELTA — pairs where frontmatter differs only in the tags key).
+const Schema = "index/3"
 
 // Entry describes one regular file discovered during a scan. It is the only
 // record type written into index.jsonl (aside from the header).
@@ -43,6 +44,11 @@ type Entry struct {
 	// FrontmatterHash is the SHA-256 of the CRLF-normalized frontmatter YAML,
 	// or empty if the file has no frontmatter (or is not markdown).
 	FrontmatterHash string `json:"frontmatter_hash,omitempty"`
+	// FrontmatterNoTagsHash is the SHA-256 of the frontmatter re-emitted
+	// without the top-level tags key. When two files' FrontmatterHash
+	// differ but their FrontmatterNoTagsHash matches, classify assigns
+	// them to TAG-DELTA instead of the coarser FRONTMATTER-ONLY bucket.
+	FrontmatterNoTagsHash string `json:"frontmatter_no_tags_hash,omitempty"`
 	// BodyHash is the SHA-256 of the CRLF-normalized post-frontmatter body.
 	// For files without frontmatter or non-markdown files, BodyHash == ContentHash.
 	BodyHash string `json:"body_hash"`
@@ -186,6 +192,11 @@ func analyze(path, relSlash string, info os.FileInfo, detector *secrets.Detector
 			} else {
 				entry.Tags = fields.Tags
 				entry.Aliases = fields.Aliases
+			}
+			// Hash the frontmatter re-emitted without tags, so classify
+			// can pick TAG-DELTA out of the FRONTMATTER-ONLY haystack.
+			if stripped, serr := frontmatter.StripTags(fm); serr == nil {
+				entry.FrontmatterNoTagsHash = string(hashing.OfBytes(normalizeLineEndings(stripped)))
 			}
 		}
 		if matched, name := detector.Detect(b); matched {

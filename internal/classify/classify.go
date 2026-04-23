@@ -17,8 +17,8 @@ import (
 )
 
 // Schema is the header schema string for classification.jsonl artifacts.
-// Bumped to v3 with the addition of referrer counts.
-const Schema = "classification/3"
+// Bumped to v4 with the addition of the TAG-DELTA bucket.
+const Schema = "classification/4"
 
 // Bucket is the classifier's verdict for a pair (or single) of files.
 //
@@ -30,6 +30,7 @@ type Bucket string
 const (
 	BucketExact            Bucket = "EXACT"
 	BucketCRLFOnly         Bucket = "CRLF-ONLY"
+	BucketTagDelta         Bucket = "TAG-DELTA"
 	BucketFrontmatterOnly  Bucket = "FRONTMATTER-ONLY"
 	BucketFrontmatterEqual Bucket = "FRONTMATTER-EQUAL"
 	BucketDiverged         Bucket = "DIVERGED"
@@ -179,10 +180,17 @@ func bucketFor(a, b scan.Entry) (Bucket, string) {
 	if a.ContentHash == b.ContentHash {
 		return BucketCRLFOnly, ""
 	}
-	// Body match, frontmatter differs → FRONTMATTER-ONLY.
-	// BodyHash can be empty on non-md files that went through older schemas;
-	// require both sides non-empty before using it.
+	// Body match, frontmatter differs. Distinguish the tag-only case:
+	// TAG-DELTA when both sides have frontmatter AND the tags-stripped
+	// hashes match; FRONTMATTER-ONLY for any other difference.
+	// BodyHash can be empty on non-md files from older schemas; require
+	// both sides non-empty before using it.
 	if a.BodyHash != "" && a.BodyHash == b.BodyHash {
+		if a.FrontmatterHash != "" && b.FrontmatterHash != "" &&
+			a.FrontmatterNoTagsHash != "" &&
+			a.FrontmatterNoTagsHash == b.FrontmatterNoTagsHash {
+			return BucketTagDelta, ""
+		}
 		return BucketFrontmatterOnly, ""
 	}
 	// Frontmatter match, body differs → FRONTMATTER-EQUAL.

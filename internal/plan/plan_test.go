@@ -58,8 +58,8 @@ func TestPlan_RendersAllBuckets(t *testing.T) {
 	_, body := runPipeline(t, []testvault.File{
 		{Path: "Notes/A.md", Content: "body\n"},
 		{Path: "Prod/A.md", Content: "body\n"}, // EXACT
-		{Path: "Notes/B.md", Content: "---\ntags: [x]\n---\n\nshared\n"},
-		{Path: "Prod/B.md", Content: "---\ntags: [y]\n---\n\nshared\n"}, // FRONTMATTER-ONLY
+		{Path: "Notes/B.md", Content: "---\ntitle: One\nsource: a\n---\n\nshared\n"},
+		{Path: "Prod/B.md", Content: "---\ntitle: Two\nsource: a\n---\n\nshared\n"}, // FRONTMATTER-ONLY (title differs, not just tags)
 		{Path: "Notes/C.md", Content: "---\ntags: [x]\n---\n\none\n"},
 		{Path: "Prod/C.md", Content: "---\ntags: [x]\n---\n\ntwo\n"}, // FRONTMATTER-EQUAL
 		{Path: "Notes/Keys.md", Content: "AKIAIOSFODNN7EXAMPLE\n"},   // SECRETS unique

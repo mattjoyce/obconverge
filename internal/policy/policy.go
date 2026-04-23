@@ -67,13 +67,15 @@ type Policy struct {
 
 // Default returns conservative defaults: destructive actions only for the
 // three "proven-safe" buckets (EXACT, CRLF-ONLY, WHITESPACE-ONLY), merge
-// for FRONTMATTER-ONLY, review for anything ambiguous, quarantine for
-// SECRETS, keep for UNIQUE. Secret response defaults to Block.
+// for FRONTMATTER-ONLY and TAG-DELTA, review for anything ambiguous,
+// quarantine for SECRETS, keep for UNIQUE. Secret response defaults to
+// Block.
 func Default() Policy {
 	return Policy{
 		Rules: map[classify.Bucket]Action{
 			classify.BucketExact:            ActionDrop,
 			classify.BucketCRLFOnly:         ActionDrop,
+			classify.BucketTagDelta:         ActionMergeFrontmatter,
 			classify.BucketFrontmatterOnly:  ActionMergeFrontmatter,
 			classify.BucketFrontmatterEqual: ActionReview,
 			classify.BucketDiverged:         ActionReview,
