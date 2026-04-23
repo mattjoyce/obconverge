@@ -161,7 +161,11 @@ func TestApply_DryRunDoesNotMutate(t *testing.T) {
 	}
 }
 
-func TestApply_RefusesLinkedNote(t *testing.T) {
+// TestApply_DropsLinkedPairBecauseBasenameSurvives is the correctness
+// companion to the linked-note refusal: dropping one copy of a pair
+// doesn't break any [[Alpha]] reference because the other copy keeps
+// the same basename. apply SHOULD proceed here.
+func TestApply_DropsLinkedPairBecauseBasenameSurvives(t *testing.T) {
 	root := setup(t,
 		testvault.File{Path: "Notes/Alpha.md", Content: "body\n"},
 		testvault.File{Path: "Prod/Alpha.md", Content: "body\n"},
@@ -170,19 +174,59 @@ func TestApply_RefusesLinkedNote(t *testing.T) {
 	tickAll(t, root)
 
 	sum := runApply(t, root, true)
+	if sum.Applied != 1 {
+		t.Errorf("Applied = %d, want 1 (pair drops are link-safe): summary=%+v", sum.Applied, sum)
+	}
+	if sum.Refused != 0 {
+		t.Errorf("Refused = %d, want 0 (basename preserved by the surviving copy)", sum.Refused)
+	}
+
+	// Notes/Alpha.md dropped, Prod/Alpha.md survives.
+	if _, err := os.Stat(filepath.Join(root, "Prod/Alpha.md")); err != nil {
+		t.Errorf("Prod/Alpha.md should survive the pair drop: %v", err)
+	}
+	// Referrer file untouched.
+	refBytes, err := os.ReadFile(filepath.Join(root, "References.md"))
+	if err != nil {
+		t.Fatalf("read referrer: %v", err)
+	}
+	if !strings.Contains(string(refBytes), "[[Alpha]]") {
+		t.Errorf("Referrer should be unchanged; got:\n%s", refBytes)
+	}
+}
+
+// TestApply_RefusesLinkedUniqueDrop is the case where the refusal is
+// legitimately needed: dropping the only copy of a linked file. Default
+// policy maps UNIQUE -> keep, so we override to drop to trigger the
+// path.
+func TestApply_RefusesLinkedUniqueDrop(t *testing.T) {
+	root := setup(t,
+		testvault.File{Path: "Hub.md", Content: "hub body\n"},
+		testvault.File{Path: "Refs.md", Content: "see [[Hub]]\n"},
+	)
+	tickAll(t, root)
+
+	// Override policy: drop for UNIQUE. This is the only way a drop
+	// gets applied to a lone file today.
+	pol := policy.Default()
+	pol.Rules[classify.BucketUnique] = policy.ActionDrop
+
+	sum, err := apply.Run(apply.Options{
+		VaultRoot: root,
+		Execute:   true,
+		Policy:    &pol,
+		Now:       time.Date(2026, 4, 23, 10, 0, 1, 0, time.UTC),
+	})
+	if err != nil {
+		t.Fatalf("apply: %v", err)
+	}
 	if sum.Refused != 1 {
-		t.Errorf("Refused = %d, want 1: summary=%+v", sum.Refused, sum)
+		t.Errorf("Refused = %d, want 1 (unique drop of linked file must refuse): %+v", sum.Refused, sum)
 	}
-	if sum.Applied != 0 {
-		t.Errorf("Applied = %d, want 0 (file is linked)", sum.Applied)
-	}
-
-	// Both originals still present.
-	if _, err := os.Stat(filepath.Join(root, "Notes/Alpha.md")); err != nil {
-		t.Errorf("Notes/Alpha.md should still exist: %v", err)
+	if _, err := os.Stat(filepath.Join(root, "Hub.md")); err != nil {
+		t.Errorf("Hub.md should still exist: %v", err)
 	}
 
-	// Journal should record the refusal with reason linked_note.
 	journal := readJournal(t, root)
 	found := false
 	for _, e := range journal {
@@ -194,7 +238,7 @@ func TestApply_RefusesLinkedNote(t *testing.T) {
 		}
 	}
 	if !found {
-		t.Errorf("journal missing linked_note refusal: %+v", journal)
+		t.Errorf("journal missing linked_note refusal for unique drop: %+v", journal)
 	}
 }
 

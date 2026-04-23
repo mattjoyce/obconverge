@@ -285,13 +285,12 @@ func processOne(opts Options, pol *policy.Policy, rec classify.Record, byPath ma
 	entry := Entry{ActionID: id, AppliedAt: now}
 
 	action := pol.ActionFor(rec.Bucket)
-	mutating := isMutatingAction(action)
 
 	// SECRETS handling. SecretPattern always stamped on the entry for
 	// audit, regardless of response mode or mutating-ness.
 	if rec.Bucket == classify.BucketSecrets {
 		entry.SecretPattern = rec.SecretPattern
-		if mutating {
+		if isMutatingAction(action) {
 			switch opts.SecretResponse {
 			case policy.SecretBlock, "":
 				entry.Result = ResultRefused
@@ -309,10 +308,20 @@ func processOne(opts Options, pol *policy.Policy, rec classify.Record, byPath ma
 		}
 	}
 
-	// Linked-note refusal (until --rewrite-links lands) — only matters
-	// for mutating actions. A non-mutating action on a linked file is
-	// fine.
-	if mutating && graph.Count(rec.Basename) > 0 {
+	// Linked-note refusal applies only to operations that can break
+	// basename resolution.
+	//
+	//   drop on a pair:   the other copy survives with the same
+	//                     basename, so [[Foo]] still resolves. SAFE.
+	//   drop on a unique: the only copy is removed; every [[Foo]]
+	//                     referrer breaks. REFUSE.
+	//   merge-frontmatter: winner stays in place, keeps its basename;
+	//                     loser's trash isn't referenceable but the
+	//                     winner absorbs all [[Foo]] refs. SAFE.
+	//
+	// --rewrite-links will later lift the unique-drop refusal by
+	// editing referrers; not implemented in this commit.
+	if action == policy.ActionDrop && rec.Type == "unique" && graph.Count(rec.Basename) > 0 {
 		entry.Result = ResultRefused
 		entry.Reason = ReasonLinkedNote
 		entry.Path = primaryPath(rec)
