@@ -114,14 +114,33 @@ make install    # $HOME/go/bin/obconverge
 
 All tests run against real filesystem fixtures in `t.TempDir()`. No mocks.
 
+## For LLM agents
+
+The binary self-describes via embedded descriptors so agents don't need to parse the README:
+
+```bash
+obconverge --skills       # markdown form (human-readable)
+obconverge --skills-json  # JSON form (machine-readable)
+```
+
+The JSON descriptor enumerates subcommands, flags, classifier buckets, policy actions, exit codes, artifact schemas, and secret-pattern names. A drift test (`cmd/obconverge:TestCLI_DescriptorMatchesCobraTree`) fails CI if the descriptor disagrees with the actual cobra tree, so agents can trust it.
+
+Agent-friendly behaviors:
+
+- **stdout** is the artifact path on success; everything else (progress, warnings, errors) goes to **stderr** via `slog`.
+- `--log-format json` switches stderr to structured JSON for parseable logs.
+- **Exit codes** are typed (0 success, 1 usage, 2 validation, 3 plan-required, 4 hash-drift, 5 refused) and documented in the descriptor.
+- **Artifacts are JSONL** with a schema-versioned header record; readers refuse unknown schemas (`ErrUnsupportedSchema`) so agents can version-pin.
+- **Idempotent**: re-running any subcommand is safe. `plan` preserves checkbox state across runs via stable action IDs.
+
 ## Roadmap
 
 - [x] `scan` — walk vault, emit index
 - [x] `classify` — seven buckets, SECRETS-quarantine, real-filesystem tests
 - [x] `plan` — policy-driven, checkbox-reviewable, re-entrant
+- [x] `--skills` / `--skills-json` agent descriptor with drift test
 - [ ] `apply` — hash-before-mutate, journal every op, soft-delete to `.obconverge/trash/`
-- [ ] Wikilink + embed graph (enables safe linked-note moves)
+- [ ] Link detection (enables safe apply — initially conservative: refuse linked-note moves)
 - [ ] `undo` — journal reversal
 - [ ] `TAG-DELTA` / `APPEND-ONLY` buckets
-- [ ] `--skills` / `--skills-json` agent descriptor
 - [ ] Import-graph purity invariant test

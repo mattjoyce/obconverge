@@ -1,0 +1,127 @@
+{
+  "tool": "obconverge",
+  "version": "v0.1.0-audit",
+  "description": "Read-only vault reconciliation auditor for Obsidian. scan -> classify -> plan produces an auditable, human-reviewable report; apply and undo are deferred to a later release.",
+  "stance": [
+    "Effects at the edges: scan, classify, plan are pure. Only apply (not yet built) mutates.",
+    "Values, not places: every phase's output is a file.",
+    "Decisions as data: the plan is a markdown note the operator reviews in Obsidian.",
+    "Policy, not mechanism: bucket -> action is declarative YAML, not code."
+  ],
+  "safety": [
+    "scan, classify, plan never mutate the vault. Tests enforce this.",
+    "Files matching any known credential pattern are routed to the SECRETS bucket and quarantined. Credential bytes never appear in any artifact."
+  ],
+  "subcommands": [
+    {
+      "name": "scan",
+      "summary": "Walk the vault and emit index.jsonl.",
+      "reads": ["vault files"],
+      "writes": ["<vault>/<work_dir>/index.jsonl"],
+      "flags": [
+        {"long": "vault", "type": "string", "required": false, "description": "Path to Obsidian vault. Falls back to config.vault_path."},
+        {"long": "output", "short": "o", "type": "string", "required": false, "description": "Override output path for index.jsonl."}
+      ]
+    },
+    {
+      "name": "classify",
+      "summary": "Group index entries by basename and assign each pair a bucket.",
+      "reads": ["<vault>/<work_dir>/index.jsonl"],
+      "writes": ["<vault>/<work_dir>/classification.jsonl"],
+      "flags": [
+        {"long": "vault", "type": "string", "required": false, "description": "Path to Obsidian vault."},
+        {"long": "index", "type": "string", "required": false, "description": "Override input path for index.jsonl."},
+        {"long": "output", "short": "o", "type": "string", "required": false, "description": "Override output path for classification.jsonl."}
+      ]
+    },
+    {
+      "name": "plan",
+      "summary": "Consume classification + policy, emit a markdown checklist for human review in Obsidian.",
+      "reads": ["<vault>/<work_dir>/classification.jsonl", "<vault>/<work_dir>/policy.yaml"],
+      "writes": ["<vault>/<work_dir>/plan.md"],
+      "flags": [
+        {"long": "vault", "type": "string", "required": false, "description": "Path to Obsidian vault."},
+        {"long": "classification", "type": "string", "required": false, "description": "Override input path for classification.jsonl."},
+        {"long": "policy", "type": "string", "required": false, "description": "Override path for policy.yaml. Missing file is fine — defaults apply."},
+        {"long": "output", "short": "o", "type": "string", "required": false, "description": "Override output path for plan.md."}
+      ],
+      "notes": [
+        "plan is re-entrant: checkbox state in an existing plan.md is preserved for action IDs that still apply.",
+        "Action IDs are a 12-hex SHA-256 prefix of (bucket, type, sorted paths). Stable across runs."
+      ]
+    }
+  ],
+  "persistent_flags": [
+    {"long": "config", "short": "c", "type": "string", "description": "Override config file (replaces user config; does not merge)."},
+    {"long": "log-level", "type": "string", "description": "debug | info | warn | error. Overrides config."},
+    {"long": "log-format", "type": "string", "description": "text | json. Overrides config."},
+    {"long": "version", "type": "bool", "description": "Print version and exit."}
+  ],
+  "buckets": [
+    {"name": "EXACT", "condition": "byte-identical", "default_action": "drop", "implemented": true},
+    {"name": "CRLF-ONLY", "condition": "equal after line-ending normalization", "default_action": "drop", "implemented": true},
+    {"name": "WHITESPACE-ONLY", "condition": "equal after whitespace normalization", "default_action": "drop", "implemented": false},
+    {"name": "FRONTMATTER-ONLY", "condition": "body identical, frontmatter differs", "default_action": "merge-frontmatter", "implemented": true},
+    {"name": "FRONTMATTER-EQUAL", "condition": "frontmatter identical, body differs", "default_action": "review", "implemented": true},
+    {"name": "TAG-DELTA", "condition": "only tags list differs", "default_action": "merge-frontmatter", "implemented": false},
+    {"name": "APPEND-ONLY", "condition": "one side is a byte-prefix of the other", "default_action": "drop", "implemented": false},
+    {"name": "DIVERGED", "condition": "non-trivial differences", "default_action": "review", "implemented": true},
+    {"name": "SECRETS", "condition": "contains a credential-shaped string; wins over any other bucket", "default_action": "quarantine", "implemented": true},
+    {"name": "UNIQUE", "condition": "single occurrence of the basename", "default_action": "keep", "implemented": true}
+  ],
+  "actions": [
+    {"name": "drop", "description": "Move one file to .obconverge/trash/ (pending apply)."},
+    {"name": "merge-frontmatter", "description": "Union-merge frontmatter keys; drop the losing copy (pending apply)."},
+    {"name": "review", "description": "Flag for human review; apply never touches."},
+    {"name": "quarantine", "description": "SECRETS-only: apply opens both files in Obsidian and does not modify."},
+    {"name": "keep", "description": "No-op; file is recognized and left alone."}
+  ],
+  "exit_codes": [
+    {"code": 0, "meaning": "success"},
+    {"code": 1, "meaning": "usage error (missing flag, bad input, or any other unclassified error)"},
+    {"code": 2, "meaning": "validation error (bad config, bad policy, bad vault path)"},
+    {"code": 3, "meaning": "plan required (apply invoked without an approved plan) — reserved for apply"},
+    {"code": 4, "meaning": "hash drift since plan was written — reserved for apply"},
+    {"code": 5, "meaning": "refused by a safety invariant (linked note, referenced attachment, protected path) — reserved for apply"}
+  ],
+  "artifacts": [
+    {"name": "index.jsonl", "schema": "index/2", "description": "One Entry per regular file in the vault.", "first_line": "{\"type\":\"header\",\"schema\":\"index/2\",\"created\":\"<RFC3339>\"}"},
+    {"name": "classification.jsonl", "schema": "classification/2", "description": "One Record per pair or unique file.", "first_line": "{\"type\":\"header\",\"schema\":\"classification/2\",\"created\":\"<RFC3339>\"}"},
+    {"name": "plan.md", "schema": "plan/1", "description": "Human-reviewable markdown checklist; operator ticks checkboxes to approve.", "first_lines": "Obsidian YAML frontmatter with tool/schema/created fields."}
+  ],
+  "config": {
+    "location": "~/.config/obconverge/config",
+    "format": "YAML",
+    "precedence": [
+      "1. Hard-coded safe defaults",
+      "2. User config at ~/.config/obconverge/config (optional)",
+      "3. --config/-c override file (replaces user layer; does not merge)",
+      "4. CLI flag overrides"
+    ],
+    "fields": {
+      "vault_path": "string (path, ~/ expanded)",
+      "work_dir": "string (default: .obconverge)",
+      "policy_file": "string (default: policy.yaml)",
+      "ignore_file": "string (default: ignore)",
+      "apply_mode": "dry-run | apply",
+      "rewrite_links": "never | ask | always",
+      "delete_mode": "soft | hard",
+      "log_level": "debug | info | warn | error",
+      "log_format": "text | json",
+      "tags_handling": "replace | add | merge",
+      "aliases_handling": "replace | add | merge",
+      "properties_handling": "replace | add | merge"
+    }
+  },
+  "secret_patterns": [
+    {"name": "anthropic", "description": "Anthropic API keys (sk-ant-...)"},
+    {"name": "openai", "description": "OpenAI API keys (sk-...)"},
+    {"name": "aws-access-key", "description": "AWS access key IDs (AKIA...)"},
+    {"name": "google-api", "description": "Google API keys (AIza...)"},
+    {"name": "github-pat", "description": "GitHub classic PATs (ghp_...)"},
+    {"name": "github-fine", "description": "GitHub fine-grained PATs (github_pat_...)"},
+    {"name": "jwt", "description": "JSON Web Tokens (three base64url segments)"},
+    {"name": "slack", "description": "Slack tokens (xoxb/xoxa/xoxp/xoxr/xoxs-...)"},
+    {"name": "pem", "description": "PEM-encoded private keys (BEGIN ... PRIVATE KEY)"}
+  ]
+}

@@ -37,6 +37,7 @@ build:
 	go build -ldflags "$(LDFLAGS)" -o obconverge ./cmd/obconverge
 
 install:
+	rm -f "$$(go env GOPATH)/bin/obconverge"
 	go install -ldflags "$(LDFLAGS)" ./cmd/obconverge
 
 clean:

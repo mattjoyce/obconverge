@@ -19,6 +19,7 @@ import (
 	"github.com/mattjoyce/obconverge/internal/logging"
 	"github.com/mattjoyce/obconverge/internal/plan"
 	"github.com/mattjoyce/obconverge/internal/scan"
+	"github.com/mattjoyce/obconverge/internal/skills"
 )
 
 // version is stamped via -ldflags at release time; "dev" in local builds.
@@ -40,10 +41,12 @@ func main() {
 // newRoot constructs the root cobra command. Exposed for tests.
 func newRoot() *cobra.Command {
 	var (
-		configFlag string
-		logLevel   string
-		logFormat  string
-		showVer    bool
+		configFlag  string
+		logLevel    string
+		logFormat   string
+		showVer     bool
+		showSkills  bool
+		showSkillsJ bool
 	)
 
 	root := &cobra.Command{
@@ -53,6 +56,12 @@ func newRoot() *cobra.Command {
 		SilenceUsage:  true,
 		SilenceErrors: false,
 		PersistentPreRunE: func(cmd *cobra.Command, args []string) error {
+			// Skills flags short-circuit before any config load or side effect.
+			// This matches the spec: --skills and --skills-json never touch
+			// the vault.
+			if showSkills || showSkillsJ {
+				return nil
+			}
 			userPath, err := config.DefaultUserConfigPath()
 			if err != nil {
 				return fmt.Errorf("%w: %v", errcode.ErrValidation, err)
@@ -78,7 +87,14 @@ func newRoot() *cobra.Command {
 			return nil
 		},
 		RunE: func(cmd *cobra.Command, args []string) error {
-			if showVer {
+			switch {
+			case showSkillsJ:
+				_, _ = cmd.OutOrStdout().Write(skills.JSON())
+				return nil
+			case showSkills:
+				_, _ = cmd.OutOrStdout().Write(skills.Markdown())
+				return nil
+			case showVer:
 				_, _ = fmt.Fprintln(cmd.OutOrStdout(), version)
 				return nil
 			}
@@ -90,6 +106,8 @@ func newRoot() *cobra.Command {
 	root.PersistentFlags().StringVar(&logLevel, "log-level", "", "Log level: debug|info|warn|error (overrides config)")
 	root.PersistentFlags().StringVar(&logFormat, "log-format", "", "Log format: text|json (overrides config)")
 	root.Flags().BoolVar(&showVer, "version", false, "Print version and exit")
+	root.Flags().BoolVar(&showSkills, "skills", false, "Print the markdown capability descriptor and exit")
+	root.Flags().BoolVar(&showSkillsJ, "skills-json", false, "Print the JSON capability descriptor and exit")
 
 	root.AddCommand(newScanCmd())
 	root.AddCommand(newClassifyCmd())

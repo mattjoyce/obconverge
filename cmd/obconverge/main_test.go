@@ -2,11 +2,16 @@ package main
 
 import (
 	"bytes"
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 
+	"github.com/spf13/cobra"
+	"github.com/spf13/pflag"
+
+	"github.com/mattjoyce/obconverge/internal/skills"
 	"github.com/mattjoyce/obconverge/internal/testvault"
 )
 
@@ -72,6 +77,110 @@ func TestCLI_VersionFlag(t *testing.T) {
 	// Default version stamp is "dev" unless the caller overrides via ldflags.
 	if got == "" {
 		t.Fatalf("--version printed nothing")
+	}
+}
+
+func TestCLI_SkillsFlag(t *testing.T) {
+	cmd := newRoot()
+	var out bytes.Buffer
+	cmd.SetOut(&out)
+	cmd.SetErr(&out)
+	cmd.SetArgs([]string{"--skills"})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("--skills: %v", err)
+	}
+	body := out.String()
+	if !strings.Contains(body, "obconverge") || !strings.Contains(body, "## Subcommands") {
+		t.Errorf("--skills output missing expected sections:\n%s", body)
+	}
+}
+
+func TestCLI_SkillsJSONFlag(t *testing.T) {
+	cmd := newRoot()
+	var out bytes.Buffer
+	cmd.SetOut(&out)
+	cmd.SetErr(&out)
+	cmd.SetArgs([]string{"--skills-json"})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("--skills-json: %v", err)
+	}
+	var raw any
+	if err := json.Unmarshal(out.Bytes(), &raw); err != nil {
+		t.Fatalf("--skills-json is not valid JSON: %v\n%s", err, out.String())
+	}
+}
+
+// TestCLI_DescriptorMatchesCobraTree is the drift guard: every subcommand
+// and every non-persistent flag declared in the descriptor must exist in
+// the cobra tree, and vice versa. If this fails, the descriptor is lying
+// about what the binary accepts.
+func TestCLI_DescriptorMatchesCobraTree(t *testing.T) {
+	d, err := skills.Parse()
+	if err != nil {
+		t.Fatalf("skills.Parse: %v", err)
+	}
+
+	root := newRoot()
+
+	// Subcommand name set.
+	cobraSubs := map[string]*cobra.Command{}
+	for _, c := range root.Commands() {
+		// cobra auto-injects "help" and "completion"; skip them.
+		if c.Name() == "help" || c.Name() == "completion" {
+			continue
+		}
+		cobraSubs[c.Name()] = c
+	}
+	descSubs := map[string]skills.SubcommandSpec{}
+	for _, s := range d.Subcommands {
+		descSubs[s.Name] = s
+	}
+
+	for name := range cobraSubs {
+		if _, ok := descSubs[name]; !ok {
+			t.Errorf("cobra has subcommand %q not in descriptor", name)
+		}
+	}
+	for name := range descSubs {
+		if _, ok := cobraSubs[name]; !ok {
+			t.Errorf("descriptor has subcommand %q not in cobra", name)
+		}
+	}
+
+	// Flags per subcommand: compare descriptor flags against cobra LOCAL
+	// flags (inherited persistent flags live in the top-level list).
+	for name, cmd := range cobraSubs {
+		spec := descSubs[name]
+
+		cobraFlags := map[string]bool{}
+		cmd.LocalFlags().VisitAll(func(f *pflag.Flag) {
+			cobraFlags[f.Name] = true
+		})
+
+		descFlags := map[string]bool{}
+		for _, f := range spec.Flags {
+			descFlags[f.Long] = true
+		}
+
+		for flagName := range cobraFlags {
+			if !descFlags[flagName] {
+				t.Errorf("subcommand %q: cobra has flag --%s not in descriptor", name, flagName)
+			}
+		}
+		for flagName := range descFlags {
+			if !cobraFlags[flagName] {
+				t.Errorf("subcommand %q: descriptor has flag --%s not in cobra", name, flagName)
+			}
+		}
+	}
+
+	// Top-level persistent flags should exist on root.
+	for _, f := range d.PersistentFlags {
+		// Persistent flags include version/skills/skills-json which are local
+		// to root (not PersistentFlags in cobra terms). Accept either.
+		if root.PersistentFlags().Lookup(f.Long) == nil && root.Flags().Lookup(f.Long) == nil {
+			t.Errorf("descriptor declares persistent flag --%s but cobra root has no such flag", f.Long)
+		}
 	}
 }
 
