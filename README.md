@@ -1,8 +1,10 @@
 # obconverge
 
-**Status**: `v0.1.0-audit` — read-only. Does not modify your vault yet.
+**Status**: `v0.1.0-audit` — full pipeline shipped: `scan` → `classify` → `plan` → `apply` → `undo` → `purge`. 10 of 10 classifier buckets implemented.
 
-A reconciliation CLI for Obsidian. Today it audits. Later it reconciles.
+A reconciliation CLI for Obsidian.
+
+**→ [TUTORIAL.md](TUTORIAL.md)** — seven scenario-driven walk-throughs covering every feature.
 
 ## What it does today (audit mode)
 
