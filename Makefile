@@ -34,8 +34,12 @@ lint:
 #         the scan is the answer. The os.Root API would change the read
 #         semantics in ways that matter for apply (future commit) more
 #         than it does here.
+#   G703  (path traversal via taint analysis): same class as G304. apply
+#         writes to operator-supplied vault paths by design; the atomic
+#         temp-then-rename pattern writes to "<vaultfile>.obconverge.tmp"
+#         immediately adjacent to the real file.
 sec:
-	gosec -severity medium -concurrency 1 -quiet -exclude=G304,G301,G306,G122 ./...
+	gosec -severity medium -concurrency 1 -quiet -exclude=G304,G301,G306,G122,G703 ./...
 
 test:
 	go test -race -count=1 ./...

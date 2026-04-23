@@ -75,7 +75,7 @@
         "Files whose basename has any incoming wikilink or embed are refused (reason linked_note) until --rewrite-links lands.",
         "SECRETS-bucket handling depends on the response mode: block refuses with reason secrets_bucket (default); warn proceeds with a logged warning; silent proceeds quietly. The journal always stamps secret_pattern for audit, regardless of mode.",
         "Secret response modes only matter when the policy's action for SECRETS is mutating (drop, merge-frontmatter). The default policy maps SECRETS to quarantine (no-op), so response modes don't apply unless you override the policy.",
-        "merge-frontmatter action is not yet implemented; it is skipped with reason not_implemented.",
+        "merge-frontmatter: for a FRONTMATTER-ONLY pair, paths[1] is the winner (rewritten with union-merged frontmatter) and paths[0] is the loser (moved to trash). Union rule: unique keys kept from both sides; list-valued keys (tags/aliases) set-unioned preserving winner's order; scalar duplicates kept; scalar or type conflicts refuse with reason frontmatter_conflict. The loser moves to trash first so a failed rewrite leaves the winner untouched. The winner is rewritten atomically via temp + rename.",
         "Deletions are soft: files move to .obconverge/trash/<timestamp>/<original-path>. Hard delete is not yet supported."
       ]
     }

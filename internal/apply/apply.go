@@ -36,6 +36,7 @@ import (
 	"github.com/mattjoyce/obconverge/internal/artifact"
 	"github.com/mattjoyce/obconverge/internal/classify"
 	"github.com/mattjoyce/obconverge/internal/errcode"
+	"github.com/mattjoyce/obconverge/internal/frontmatter"
 	"github.com/mattjoyce/obconverge/internal/hashing"
 	"github.com/mattjoyce/obconverge/internal/links"
 	"github.com/mattjoyce/obconverge/internal/plan"
@@ -69,20 +70,31 @@ const (
 type Reason string
 
 const (
-	ReasonHashDrift      Reason = "hash_drift"
-	ReasonLinkedNote     Reason = "linked_note"
-	ReasonSecretsBucket  Reason = "secrets_bucket"
-	ReasonNotImplemented Reason = "not_implemented"
-	ReasonUnknownAction  Reason = "unknown_action"
-	ReasonPathNotInIndex Reason = "path_not_in_index"
+	ReasonHashDrift           Reason = "hash_drift"
+	ReasonLinkedNote          Reason = "linked_note"
+	ReasonSecretsBucket       Reason = "secrets_bucket"
+	ReasonNotImplemented      Reason = "not_implemented"
+	ReasonUnknownAction       Reason = "unknown_action"
+	ReasonPathNotInIndex      Reason = "path_not_in_index"
+	ReasonFrontmatterConflict Reason = "frontmatter_conflict"
+	ReasonBodyMismatch        Reason = "body_mismatch"
 )
 
 // Entry is one journal record.
 type Entry struct {
-	ActionID      string `json:"action_id"`
-	Op            Op     `json:"op"`
-	Result        Result `json:"result"`
-	Path          string `json:"path,omitempty"`
+	ActionID string `json:"action_id"`
+	Op       Op     `json:"op"`
+	Result   Result `json:"result"`
+	// Path is the primary file acted on. For drop, that's the file that
+	// was trashed. For merge-frontmatter, that's the file that was
+	// rewritten (the winner).
+	Path string `json:"path,omitempty"`
+	// SecondaryPath is populated only by merge-frontmatter: the loser
+	// file whose frontmatter contributed to the merge and which was
+	// then moved to trash.
+	SecondaryPath string `json:"secondary_path,omitempty"`
+	// TrashPath is where the soft-deleted file landed. For drop, that's
+	// Path's new location. For merge, it's SecondaryPath's new location.
 	TrashPath     string `json:"trash_path,omitempty"`
 	ContentHash   string `json:"content_hash,omitempty"`
 	ExpectedHash  string `json:"expected_hash,omitempty"`
@@ -318,13 +330,18 @@ func processOne(opts Options, pol *policy.Policy, rec classify.Record, byPath ma
 		return applyDrop(opts, entry, target, byPath, trashRoot, now)
 
 	case policy.ActionMergeFrontmatter:
-		entry.Op = OpMergeFrontmatter
-		entry.Result = ResultSkipped
-		entry.Reason = ReasonNotImplemented
-		if len(rec.Paths) > 0 {
-			entry.Path = rec.Paths[0]
+		if rec.Type != "pair" || len(rec.Paths) != 2 {
+			entry.Op = OpMergeFrontmatter
+			entry.Result = ResultSkipped
+			entry.Reason = ReasonUnknownAction
+			return entry
 		}
-		return entry
+		loser := rec.Paths[0]
+		winner := rec.Paths[1]
+		entry.Op = OpMergeFrontmatter
+		entry.Path = winner
+		entry.SecondaryPath = loser
+		return applyMerge(opts, entry, winner, loser, byPath, trashRoot)
 
 	case policy.ActionReview, policy.ActionQuarantine, policy.ActionKeep:
 		entry.Result = ResultSkipped
@@ -401,6 +418,134 @@ func applyDrop(opts Options, entry Entry, target string, byPath map[string]scan.
 	entry.Result = ResultApplied
 	slog.Info("apply: dropped", "path", target, "trash", entry.TrashPath)
 	return entry
+}
+
+// applyMerge performs (or dry-runs) a frontmatter union merge for a
+// FRONTMATTER-ONLY pair. Winner is rewritten with the merged frontmatter;
+// loser is soft-deleted to trash. Scalar conflicts refuse the op.
+func applyMerge(opts Options, entry Entry, winner, loser string, byPath map[string]scan.Entry, trashRoot string) Entry {
+	winPlan, winOK := byPath[winner]
+	losePlan, loseOK := byPath[loser]
+	if !winOK || !loseOK {
+		entry.Result = ResultSkipped
+		entry.Reason = ReasonPathNotInIndex
+		return entry
+	}
+	entry.ExpectedHash = winPlan.ContentHash
+
+	winAbs := filepath.Join(opts.VaultRoot, winner)
+	loseAbs := filepath.Join(opts.VaultRoot, loser)
+	winBytes, err := os.ReadFile(winAbs)
+	if err != nil {
+		entry.Result = ResultSkipped
+		entry.Reason = ReasonHashDrift
+		return entry
+	}
+	loseBytes, err := os.ReadFile(loseAbs)
+	if err != nil {
+		entry.Result = ResultSkipped
+		entry.Reason = ReasonHashDrift
+		return entry
+	}
+
+	winHashNow := string(hashing.OfBytes(normalizeLineEndings(winBytes)))
+	loseHashNow := string(hashing.OfBytes(normalizeLineEndings(loseBytes)))
+	entry.ActualHash = winHashNow
+	if winHashNow != winPlan.ContentHash || loseHashNow != losePlan.ContentHash {
+		entry.Result = ResultSkipped
+		entry.Reason = ReasonHashDrift
+		return entry
+	}
+
+	winFM, winBody := frontmatter.Split(winBytes)
+	loseFM, loseBody := frontmatter.Split(loseBytes)
+
+	// FRONTMATTER-ONLY bucket implied body equality. Verify after CRLF
+	// normalization so we can't be fooled by a subtle divergence the
+	// classifier missed.
+	if string(normalizeLineEndings(winBody)) != string(normalizeLineEndings(loseBody)) {
+		entry.Result = ResultSkipped
+		entry.Reason = ReasonBodyMismatch
+		return entry
+	}
+
+	mergedFM, err := frontmatter.MergeUnion(winFM, loseFM)
+	if err != nil {
+		var conflict *frontmatter.ConflictError
+		if errors.As(err, &conflict) {
+			entry.Result = ResultRefused
+			entry.Reason = ReasonFrontmatterConflict
+			return entry
+		}
+		entry.Result = ResultSkipped
+		entry.Reason = Reason(fmt.Sprintf("merge_failed: %v", err))
+		return entry
+	}
+
+	// Assemble the new winner content: delimiters + merged FM + original
+	// body. Use LF line endings throughout; callers who need CRLF can
+	// re-introduce it via their editor's conventions on subsequent saves.
+	merged := assembleFrontmatterFile(mergedFM, winBody)
+	entry.ContentHash = string(hashing.OfBytes(normalizeLineEndings(merged)))
+
+	trashPath := filepath.Join(trashRoot, loser)
+	entry.TrashPath, _ = filepath.Rel(opts.VaultRoot, trashPath)
+
+	if !opts.Execute {
+		entry.Result = ResultDryRun
+		return entry
+	}
+
+	// Move loser to trash FIRST. If the rewrite of winner fails, the vault
+	// still has winner (unchanged) and loser is recoverable from trash —
+	// no data lost. If we wrote the winner first and then failed to trash
+	// the loser, we'd have two files that are no longer FRONTMATTER-ONLY.
+	if err := os.MkdirAll(filepath.Dir(trashPath), 0o755); err != nil {
+		entry.Result = ResultSkipped
+		entry.Reason = Reason(fmt.Sprintf("mkdir_trash_failed: %v", err))
+		return entry
+	}
+	if err := os.Rename(loseAbs, trashPath); err != nil {
+		entry.Result = ResultSkipped
+		entry.Reason = Reason(fmt.Sprintf("rename_failed: %v", err))
+		return entry
+	}
+
+	// Atomic rewrite of winner via temp file + rename.
+	tmp := winAbs + ".obconverge.tmp"
+	if err := os.WriteFile(tmp, merged, 0o644); err != nil {
+		entry.Result = ResultSkipped
+		entry.Reason = Reason(fmt.Sprintf("write_tmp_failed: %v", err))
+		return entry
+	}
+	if err := os.Rename(tmp, winAbs); err != nil {
+		_ = os.Remove(tmp)
+		entry.Result = ResultSkipped
+		entry.Reason = Reason(fmt.Sprintf("rename_tmp_failed: %v", err))
+		return entry
+	}
+
+	entry.Result = ResultApplied
+	slog.Info("apply: merged frontmatter",
+		"winner", winner,
+		"loser", loser,
+		"trash", entry.TrashPath)
+	return entry
+}
+
+// assembleFrontmatterFile wraps merged frontmatter YAML in "---\n...---\n"
+// and prepends it to the body with a blank line between. yaml.Encoder
+// already leaves a trailing newline on the FM bytes.
+func assembleFrontmatterFile(fm, body []byte) []byte {
+	var buf []byte
+	buf = append(buf, []byte("---\n")...)
+	buf = append(buf, fm...)
+	if len(fm) > 0 && fm[len(fm)-1] != '\n' {
+		buf = append(buf, '\n')
+	}
+	buf = append(buf, []byte("---\n\n")...)
+	buf = append(buf, body...)
+	return buf
 }
 
 // normalizeLineEndings mirrors scan's normalization so hash comparisons

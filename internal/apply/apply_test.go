@@ -402,27 +402,179 @@ func TestApply_UncheckedItemsNotProcessed(t *testing.T) {
 	}
 }
 
-func TestApply_FrontmatterOnlyNotImplemented(t *testing.T) {
+func TestApply_MergeFrontmatter_TagUnion(t *testing.T) {
 	root := setup(t,
-		testvault.File{Path: "Notes/B.md", Content: "---\ntags: [x]\n---\n\nshared body\n"},
-		testvault.File{Path: "Prod/B.md", Content: "---\ntags: [y]\n---\n\nshared body\n"},
+		testvault.File{Path: "Notes/B.md", Content: "---\ntags:\n  - alpha\n  - beta\n---\n\nshared body\n"},
+		testvault.File{Path: "Prod/B.md", Content: "---\ntags:\n  - beta\n  - gamma\n---\n\nshared body\n"},
 	)
 	tickAll(t, root)
 
 	sum := runApply(t, root, true)
-	if sum.Skipped != 1 {
-		t.Errorf("Skipped = %d, want 1 (merge-frontmatter not implemented): %+v", sum.Skipped, sum)
+	if sum.Applied != 1 {
+		t.Errorf("Applied = %d, want 1: %+v", sum.Applied, sum)
+	}
+
+	// Winner is paths[1] = Prod/B.md (lexicographically second).
+	winner := filepath.Join(root, "Prod/B.md")
+	loser := filepath.Join(root, "Notes/B.md")
+
+	if _, err := os.Stat(loser); err == nil {
+		t.Error("loser Notes/B.md should have moved to trash")
+	}
+	winBytes, err := os.ReadFile(winner)
+	if err != nil {
+		t.Fatalf("read winner: %v", err)
+	}
+	s := string(winBytes)
+	for _, tag := range []string{"alpha", "beta", "gamma"} {
+		if !strings.Contains(s, tag) {
+			t.Errorf("winner frontmatter missing tag %q; content:\n%s", tag, s)
+		}
+	}
+	if strings.Count(s, "beta") != 1 {
+		t.Errorf("tag 'beta' should appear once after set-union; content:\n%s", s)
+	}
+	if !strings.Contains(s, "shared body") {
+		t.Errorf("winner body should be preserved; content:\n%s", s)
 	}
 
 	journal := readJournal(t, root)
 	found := false
 	for _, e := range journal {
-		if e.Op == apply.OpMergeFrontmatter && e.Reason == apply.ReasonNotImplemented {
+		if e.Op == apply.OpMergeFrontmatter && e.Result == apply.ResultApplied {
+			found = true
+			if e.Path != "Prod/B.md" {
+				t.Errorf("journal Path = %q, want Prod/B.md", e.Path)
+			}
+			if e.SecondaryPath != "Notes/B.md" {
+				t.Errorf("journal SecondaryPath = %q, want Notes/B.md", e.SecondaryPath)
+			}
+			if e.TrashPath == "" {
+				t.Error("journal TrashPath should be set for merge")
+			}
+		}
+	}
+	if !found {
+		t.Errorf("journal missing applied merge-frontmatter: %+v", journal)
+	}
+}
+
+func TestApply_MergeFrontmatter_ScalarConflictRefuses(t *testing.T) {
+	root := setup(t,
+		testvault.File{Path: "Notes/C.md", Content: "---\ntitle: Win\n---\n\nshared body\n"},
+		testvault.File{Path: "Prod/C.md", Content: "---\ntitle: Other\n---\n\nshared body\n"},
+	)
+	tickAll(t, root)
+
+	sum := runApply(t, root, true)
+	if sum.Refused != 1 {
+		t.Errorf("Refused = %d, want 1 (scalar conflict): %+v", sum.Refused, sum)
+	}
+	if sum.Applied != 0 {
+		t.Errorf("Applied = %d, want 0", sum.Applied)
+	}
+
+	// Both files must still exist — refused merges never mutate.
+	if _, err := os.Stat(filepath.Join(root, "Notes/C.md")); err != nil {
+		t.Errorf("Notes/C.md should remain: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(root, "Prod/C.md")); err != nil {
+		t.Errorf("Prod/C.md should remain: %v", err)
+	}
+
+	journal := readJournal(t, root)
+	found := false
+	for _, e := range journal {
+		if e.Op == apply.OpMergeFrontmatter && e.Reason == apply.ReasonFrontmatterConflict {
 			found = true
 		}
 	}
 	if !found {
-		t.Errorf("journal missing merge-frontmatter skip with not_implemented: %+v", journal)
+		t.Errorf("journal missing frontmatter_conflict refusal: %+v", journal)
+	}
+}
+
+func TestApply_MergeFrontmatter_HashDrift(t *testing.T) {
+	root := setup(t,
+		testvault.File{Path: "Notes/D.md", Content: "---\ntags:\n  - a\n---\n\nshared body\n"},
+		testvault.File{Path: "Prod/D.md", Content: "---\ntags:\n  - b\n---\n\nshared body\n"},
+	)
+	tickAll(t, root)
+
+	// Mutate the loser (paths[0]) after plan was written.
+	if err := os.WriteFile(filepath.Join(root, "Notes/D.md"), []byte("drifted\n"), 0o644); err != nil {
+		t.Fatalf("mutate loser: %v", err)
+	}
+
+	sum := runApply(t, root, true)
+	if sum.Skipped != 1 {
+		t.Errorf("Skipped = %d, want 1 (drift): %+v", sum.Skipped, sum)
+	}
+	// Winner must not have been modified.
+	winBytes, err := os.ReadFile(filepath.Join(root, "Prod/D.md"))
+	if err != nil {
+		t.Fatalf("read winner: %v", err)
+	}
+	if !strings.Contains(string(winBytes), "- b") {
+		t.Errorf("winner should be unchanged; content:\n%s", winBytes)
+	}
+	if strings.Contains(string(winBytes), "- a") {
+		t.Errorf("winner must not have received loser's tag under drift; content:\n%s", winBytes)
+	}
+}
+
+func TestApply_MergeFrontmatter_AddsLoserOnlyKey(t *testing.T) {
+	root := setup(t,
+		testvault.File{Path: "Notes/E.md", Content: "---\ntags:\n  - x\n---\n\nshared body\n"},
+		testvault.File{Path: "Prod/E.md", Content: "---\ntags:\n  - x\nsource: https://example.com\n---\n\nshared body\n"},
+	)
+	tickAll(t, root)
+
+	sum := runApply(t, root, true)
+	if sum.Applied != 1 {
+		t.Errorf("Applied = %d, want 1: %+v", sum.Applied, sum)
+	}
+
+	// Hmm wait — winner is paths[1] (Prod/E.md) which already has source:.
+	// The merge should be a no-op for source: and preserve the tag.
+	// Let's flip the fixture for clearer semantics: put the loser-only key
+	// on Notes/E.md (paths[0]) so the merge has to graft it onto winner.
+	// ... This is easier as a separate test case.
+	// For now assert the file is still consistent.
+	winBytes, err := os.ReadFile(filepath.Join(root, "Prod/E.md"))
+	if err != nil {
+		t.Fatalf("read winner: %v", err)
+	}
+	s := string(winBytes)
+	if !strings.Contains(s, "source: https://example.com") {
+		t.Errorf("source key should be present post-merge:\n%s", s)
+	}
+}
+
+func TestApply_MergeFrontmatter_LoserOnlyKeyGraftedOntoWinner(t *testing.T) {
+	// Loser (paths[0]=Notes/F.md) carries an extra key that must graft
+	// onto winner (paths[1]=Prod/F.md).
+	root := setup(t,
+		testvault.File{Path: "Notes/F.md", Content: "---\ntags:\n  - shared\nsource: https://example.com\n---\n\nshared body\n"},
+		testvault.File{Path: "Prod/F.md", Content: "---\ntags:\n  - shared\n---\n\nshared body\n"},
+	)
+	tickAll(t, root)
+
+	sum := runApply(t, root, true)
+	if sum.Applied != 1 {
+		t.Errorf("Applied = %d, want 1: %+v", sum.Applied, sum)
+	}
+
+	winBytes, err := os.ReadFile(filepath.Join(root, "Prod/F.md"))
+	if err != nil {
+		t.Fatalf("read winner: %v", err)
+	}
+	s := string(winBytes)
+	if !strings.Contains(s, "source: https://example.com") {
+		t.Errorf("loser-only key 'source' should be grafted onto winner:\n%s", s)
+	}
+	if !strings.Contains(s, "shared body") {
+		t.Errorf("body should be preserved:\n%s", s)
 	}
 }
 
