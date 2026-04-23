@@ -13,6 +13,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/mattjoyce/obconverge/internal/apply"
 	"github.com/mattjoyce/obconverge/internal/classify"
 	"github.com/mattjoyce/obconverge/internal/config"
 	"github.com/mattjoyce/obconverge/internal/errcode"
@@ -137,6 +138,7 @@ func newRoot() *cobra.Command {
 	root.AddCommand(newScanCmd())
 	root.AddCommand(newClassifyCmd())
 	root.AddCommand(newPlanCmd())
+	root.AddCommand(newApplyCmd())
 	return root
 }
 
@@ -258,6 +260,55 @@ func newPlanCmd() *cobra.Command {
 	cmd.Flags().StringVar(&classFlag, "classification", "", "Path to classification.jsonl (default: <vault>/<work_dir>/classification.jsonl)")
 	cmd.Flags().StringVar(&policyFlag, "policy", "", "Path to policy.yaml (default: <vault>/<work_dir>/policy.yaml)")
 	cmd.Flags().StringVarP(&outputFlag, "output", "o", "", "Output path for plan.md (default: <vault>/<work_dir>/plan.md)")
+	return cmd
+}
+
+func newApplyCmd() *cobra.Command {
+	var vaultFlag string
+	var executeFlag bool
+	cmd := &cobra.Command{
+		Use:   "apply",
+		Short: "Execute the checked items in plan.md against the vault",
+		Long: "apply reads plan.md, classification.jsonl, and index.jsonl; builds the " +
+			"link graph; and processes every checked action. SECRETS-bucket files and " +
+			"files with incoming wikilinks are refused. Files whose content hash has " +
+			"drifted since plan was written are skipped. Deletions are soft: files " +
+			"move to .obconverge/trash/<timestamp>/. Every outcome is journaled to " +
+			".obconverge/journal.jsonl. Default mode is dry-run; pass --execute to mutate.",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			cfg := cfgFromCtx(cmd.Context())
+			root, err := resolveVault(vaultFlag, cfg.VaultPath)
+			if err != nil {
+				return err
+			}
+			mode := "dry-run"
+			if executeFlag {
+				mode = "apply"
+			}
+			slog.Debug("apply starting", "vault", root, "mode", mode)
+
+			sum, err := apply.Run(apply.Options{
+				VaultRoot: root,
+				WorkDir:   cfg.WorkDir,
+				Execute:   executeFlag,
+			})
+			if err != nil {
+				return err
+			}
+
+			out := cmd.OutOrStdout()
+			if executeFlag {
+				_, _ = fmt.Fprintf(out, "apply complete: applied=%d skipped=%d refused=%d unchecked=%d\n",
+					sum.Applied, sum.Skipped, sum.Refused, sum.Unchecked)
+			} else {
+				_, _ = fmt.Fprintf(out, "dry-run: would_apply=%d skipped=%d refused=%d unchecked=%d  (pass --execute to mutate)\n",
+					sum.DryRun, sum.Skipped, sum.Refused, sum.Unchecked)
+			}
+			return nil
+		},
+	}
+	cmd.Flags().StringVar(&vaultFlag, "vault", "", "Path to Obsidian vault")
+	cmd.Flags().BoolVar(&executeFlag, "execute", false, "Actually mutate the vault (default: dry-run)")
 	return cmd
 }
 

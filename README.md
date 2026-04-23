@@ -158,7 +158,9 @@ Agent-friendly behaviors:
 - [x] `plan` — policy-driven, checkbox-reviewable, re-entrant
 - [x] `--skills` / `--skills-json` agent descriptor with drift test
 - [x] Link referrer index — wikilink / embed / heading-ref / block-ref detection with alias resolution; surfaced in `classification.jsonl` and `plan.md`
-- [ ] `apply` — hash-before-mutate, journal every op, soft-delete to `.obconverge/trash/`; refuses linked-note moves until `--rewrite-links` lands
-- [ ] `undo` — journal reversal
+- [x] `apply` (drop only) — dry-run by default, `--execute` to mutate; hash-before-mutate with `hash_drift` skip; soft-delete to `.obconverge/trash/<timestamp>/`; refuses SECRETS and linked notes; append-only journal
+- [ ] `apply` (merge-frontmatter) — implement union-merge of frontmatter keys
+- [ ] `--rewrite-links` — lift the linked-note refusal by rewriting referrers
+- [ ] `undo` — journal reversal (restore from trash, unwind merges)
 - [ ] `TAG-DELTA` / `APPEND-ONLY` buckets
 - [ ] Import-graph purity invariant test

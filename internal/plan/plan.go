@@ -145,17 +145,24 @@ func buildItems(records []classify.Record, pol policy.Policy) []Item {
 // itemID is a stable 12-hex fingerprint of (bucket, type, sorted paths).
 // Same classification → same IDs → checkbox state survives re-runs.
 func itemID(it Item) string {
+	return ItemIDFor(string(it.Bucket), it.Type, it.Paths, it.Path)
+}
+
+// ItemIDFor computes the stable action ID from the raw classification
+// fields. Exposed so apply can rebuild an ID from a classify.Record
+// without needing to construct a plan.Item.
+func ItemIDFor(bucket, kind string, paths []string, path string) string {
 	h := sha256.New()
-	h.Write([]byte(it.Bucket))
+	h.Write([]byte(bucket))
 	h.Write([]byte{0})
-	h.Write([]byte(it.Type))
+	h.Write([]byte(kind))
 	h.Write([]byte{0})
-	paths := append([]string{}, it.Paths...)
-	if it.Path != "" {
-		paths = append(paths, it.Path)
+	all := append([]string{}, paths...)
+	if path != "" {
+		all = append(all, path)
 	}
-	sort.Strings(paths)
-	for _, p := range paths {
+	sort.Strings(all)
+	for _, p := range all {
 		h.Write([]byte(p))
 		h.Write([]byte{0})
 	}

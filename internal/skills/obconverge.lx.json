@@ -49,6 +49,33 @@
         "plan is re-entrant: checkbox state in an existing plan.md is preserved for action IDs that still apply.",
         "Action IDs are a 12-hex SHA-256 prefix of (bucket, type, sorted paths). Stable across runs."
       ]
+    },
+    {
+      "name": "apply",
+      "summary": "Execute the checked items in plan.md. The only phase that mutates the vault.",
+      "reads": [
+        "<vault>/<work_dir>/plan.md",
+        "<vault>/<work_dir>/classification.jsonl",
+        "<vault>/<work_dir>/index.jsonl",
+        "vault files (to re-hash before mutation)"
+      ],
+      "writes": [
+        "<vault>/<work_dir>/journal.jsonl",
+        "<vault>/<work_dir>/trash/<timestamp>/<original-path> (soft-deleted files)"
+      ],
+      "flags": [
+        {"long": "vault", "type": "string", "required": false, "description": "Path to Obsidian vault."},
+        {"long": "execute", "type": "bool", "required": false, "description": "Actually mutate the vault. Default is dry-run."}
+      ],
+      "notes": [
+        "Default mode is dry-run. --execute is required to actually mutate.",
+        "Every action is journaled to journal.jsonl (append-only, fsynced per write) as one of: applied, skipped, refused, dry-run.",
+        "Before every mutation, the source file is re-hashed. If the hash has drifted since the plan was written, the action is skipped with reason hash_drift.",
+        "Files whose basename has any incoming wikilink or embed are refused (reason linked_note) until --rewrite-links lands.",
+        "SECRETS-bucket files are always refused (reason secrets_bucket). apply never mutates a file containing credentials.",
+        "merge-frontmatter action is not yet implemented; it is skipped with reason not_implemented.",
+        "Deletions are soft: files move to .obconverge/trash/<timestamp>/<original-path>. Hard delete is not yet supported."
+      ]
     }
   ],
   "persistent_flags": [
@@ -80,14 +107,15 @@
     {"code": 0, "meaning": "success"},
     {"code": 1, "meaning": "usage error (missing flag, bad input, or any other unclassified error)"},
     {"code": 2, "meaning": "validation error (bad config, bad policy, bad vault path)"},
-    {"code": 3, "meaning": "plan required (apply invoked without an approved plan) — reserved for apply"},
-    {"code": 4, "meaning": "hash drift since plan was written — reserved for apply"},
-    {"code": 5, "meaning": "refused by a safety invariant (linked note, referenced attachment, protected path) — reserved for apply"}
+    {"code": 3, "meaning": "plan required (apply invoked without an approved plan)"},
+    {"code": 4, "meaning": "hash drift since plan was written (journaled; apply exits 0 today, code 4 reserved for a future --strict mode)"},
+    {"code": 5, "meaning": "refused by a safety invariant (linked note, SECRETS, protected path) — journaled; apply exits 0 today, code 5 reserved for a future --strict mode"}
   ],
   "artifacts": [
     {"name": "index.jsonl", "schema": "index/2", "description": "One Entry per regular file in the vault.", "first_line": "{\"type\":\"header\",\"schema\":\"index/2\",\"created\":\"<RFC3339>\"}"},
     {"name": "classification.jsonl", "schema": "classification/3", "description": "One Record per pair or unique file; includes referrer_count (incoming wikilinks/embeds to the file's basename, resolved via frontmatter aliases).", "first_line": "{\"type\":\"header\",\"schema\":\"classification/3\",\"created\":\"<RFC3339>\"}"},
-    {"name": "plan.md", "schema": "plan/1", "description": "Human-reviewable markdown checklist; operator ticks checkboxes to approve.", "first_lines": "Obsidian YAML frontmatter with tool/schema/created fields."}
+    {"name": "plan.md", "schema": "plan/1", "description": "Human-reviewable markdown checklist; operator ticks checkboxes to approve.", "first_lines": "Obsidian YAML frontmatter with tool/schema/created fields."},
+    {"name": "journal.jsonl", "schema": "journal/1", "description": "Append-only log of apply outcomes: one Entry per attempted action with action_id, op, result (applied|skipped|refused|dry-run), path, trash_path, content_hash, expected_hash, actual_hash, reason, referrer_count, applied_at. Previous journals are preserved with a .<timestamp>.bak suffix.", "first_line": "{\"type\":\"header\",\"schema\":\"journal/1\",\"created\":\"<RFC3339>\"}"}
   ],
   "config": {
     "location": "~/.config/obconverge/config",
