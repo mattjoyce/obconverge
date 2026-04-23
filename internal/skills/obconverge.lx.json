@@ -51,6 +51,22 @@
       ]
     },
     {
+      "name": "purge",
+      "summary": "Remove everything under .obconverge/trash/; this makes the affected apply runs permanently non-reversible.",
+      "reads": ["<vault>/<work_dir>/trash/"],
+      "writes": ["<vault>/<work_dir>/trash/ (removed)"],
+      "flags": [
+        {"long": "vault", "type": "string", "required": false, "description": "Path to Obsidian vault."},
+        {"long": "execute", "type": "bool", "required": false, "description": "Actually remove. Default is dry-run (reports counts)."}
+      ],
+      "notes": [
+        "Default mode is dry-run. Reports file count and total bytes.",
+        "After successful purge, undo reports trash_missing for every Applied journal entry — by design.",
+        "v1 purges the entire trash tree; selective purge by timestamp or action id is a future enhancement.",
+        "Absent trash directory is not an error; purge is idempotent."
+      ]
+    },
+    {
       "name": "undo",
       "summary": "Reverse the most recent apply run by restoring files from trash.",
       "reads": ["<vault>/<work_dir>/journal.jsonl", "<vault>/<work_dir>/trash/"],

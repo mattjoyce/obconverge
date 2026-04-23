@@ -169,6 +169,9 @@ Agent-friendly behaviors:
 - [x] `apply` (drop) — dry-run by default, `--execute` to mutate; hash-before-mutate with `hash_drift` skip; soft-delete to `.obconverge/trash/<timestamp>/`; refuses SECRETS (block/warn/silent modes) and linked notes; append-only journal
 - [x] `apply` (merge-frontmatter) — union-merge of frontmatter keys; loser trashed, winner rewritten atomically; scalar/type conflicts refuse with `frontmatter_conflict`
 - [x] `undo` — journal reversal: restore drops from trash and revert merge-frontmatter rewrites using the winner's pre-merge backup. Refuses to overwrite files the operator has edited post-apply.
-- [ ] `--rewrite-links` — lift the linked-note refusal by rewriting referrers
+- [x] `purge` — remove `.obconverge/trash/` entirely; marks the boundary beyond which undo cannot recover ("reversible until --purge").
+- [x] Import-graph purity invariant test — `internal/invariants/purity_test.go` asserts scan/classify/plan/etc. never transitively import apply or undo.
+- [ ] `--rewrite-links` — relax the linked-note refusal (correct: pair-drops are already link-safe because basename resolution preserves referrers; only unique-drops break links)
+- [ ] TAG-DELTA / APPEND-ONLY — classifier polish
 - [ ] `TAG-DELTA` / `APPEND-ONLY` buckets
 - [ ] Import-graph purity invariant test

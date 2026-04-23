@@ -21,6 +21,7 @@ import (
 	"github.com/mattjoyce/obconverge/internal/logging"
 	"github.com/mattjoyce/obconverge/internal/plan"
 	"github.com/mattjoyce/obconverge/internal/policy"
+	"github.com/mattjoyce/obconverge/internal/purge"
 	"github.com/mattjoyce/obconverge/internal/scan"
 	"github.com/mattjoyce/obconverge/internal/secrets"
 	"github.com/mattjoyce/obconverge/internal/skills"
@@ -142,6 +143,7 @@ func newRoot() *cobra.Command {
 	root.AddCommand(newPlanCmd())
 	root.AddCommand(newApplyCmd())
 	root.AddCommand(newUndoCmd())
+	root.AddCommand(newPurgeCmd())
 	return root
 }
 
@@ -385,6 +387,46 @@ func newUndoCmd() *cobra.Command {
 	}
 	cmd.Flags().StringVar(&vaultFlag, "vault", "", "Path to Obsidian vault")
 	cmd.Flags().BoolVar(&executeFlag, "execute", false, "Actually move files (default: dry-run)")
+	return cmd
+}
+
+func newPurgeCmd() *cobra.Command {
+	var vaultFlag string
+	var executeFlag bool
+	cmd := &cobra.Command{
+		Use:   "purge",
+		Short: "Remove everything under .obconverge/trash/ (irreversible)",
+		Long: "purge removes the trash directory that apply writes to. After a " +
+			"successful purge, undo cannot recover anything from the affected apply " +
+			"runs — this is the \"reversible until --purge\" boundary from SPEC.md. " +
+			"Default is dry-run (reports file count + total bytes); pass --execute " +
+			"to actually remove the trash tree.",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			cfg := cfgFromCtx(cmd.Context())
+			root, err := resolveVault(vaultFlag, cfg.VaultPath)
+			if err != nil {
+				return err
+			}
+			slog.Debug("purge starting", "vault", root, "execute", executeFlag)
+			sum, err := purge.Run(purge.Options{
+				VaultRoot: root,
+				WorkDir:   cfg.WorkDir,
+				Execute:   executeFlag,
+			})
+			if err != nil {
+				return err
+			}
+			out := cmd.OutOrStdout()
+			if executeFlag {
+				_, _ = fmt.Fprintf(out, "purge complete: removed=%d files, %d bytes\n", sum.Files, sum.Bytes)
+			} else {
+				_, _ = fmt.Fprintf(out, "dry-run: would_remove=%d files, %d bytes  (pass --execute to purge)\n", sum.Files, sum.Bytes)
+			}
+			return nil
+		},
+	}
+	cmd.Flags().StringVar(&vaultFlag, "vault", "", "Path to Obsidian vault")
+	cmd.Flags().BoolVar(&executeFlag, "execute", false, "Actually remove the trash tree (default: dry-run)")
 	return cmd
 }
 
